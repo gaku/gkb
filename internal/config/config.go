@@ -9,6 +9,13 @@ import (
 
 type Config struct {
 	KbDir string `toml:"kb_dir"`
+	// ServeUser/ServePass gate `gkb serve` with HTTP Basic Auth. When either is
+	// empty the server runs unauthenticated (with a warning). TLS is expected to
+	// be terminated by a reverse proxy (Tailscale/Caddy), so these credentials
+	// only travel over the encrypted browser->proxy hop and the loopback
+	// proxy->gkb hop.
+	ServeUser string `toml:"serve_user"`
+	ServePass string `toml:"serve_pass"`
 }
 
 func configPath() string {

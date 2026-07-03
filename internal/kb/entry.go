@@ -51,7 +51,26 @@ func Create(kbDir, title string, slug string, tags []string) (*Entry, error) {
 	if err := os.MkdirAll(kbDir, 0755); err != nil {
 		return nil, err
 	}
-	return e, os.WriteFile(path, []byte(e.marshal()), 0644)
+	return e, os.WriteFile(path, []byte(e.Marshal()), 0644)
+}
+
+// Exists reports whether an entry with the given slug is already on disk.
+func Exists(kbDir, slug string) bool {
+	_, err := os.Stat(entryPath(kbDir, slug))
+	return err == nil
+}
+
+// Save writes an entry (frontmatter + body) to disk, overwriting any existing
+// file for its slug. Used by the web editor in `gkb serve`; the CLI edits the
+// raw file via $EDITOR instead.
+func Save(kbDir string, e *Entry) error {
+	if e.Slug == "" {
+		return fmt.Errorf("entry has no slug")
+	}
+	if err := os.MkdirAll(kbDir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(entryPath(kbDir, e.Slug), []byte(e.Marshal()), 0644)
 }
 
 func Load(kbDir, slug string) (*Entry, error) {
@@ -136,13 +155,22 @@ func (e *Entry) hasTag(tag string) bool {
 	return false
 }
 
-func (e *Entry) marshal() string {
+// Marshal serializes the entry to its on-disk form: YAML-ish frontmatter
+// followed by the markdown body. An empty body yields just the frontmatter
+// (matching the original `add` behavior, where the body was filled in later via
+// $EDITOR).
+func (e *Entry) Marshal() string {
 	tags := ""
 	if len(e.Tags) > 0 {
 		tags = "tags: " + strings.Join(e.Tags, ", ") + "\n"
 	}
-	return fmt.Sprintf("---\ntitle: %s\ndate: %s\n%s---\n\n",
+	fm := fmt.Sprintf("---\ntitle: %s\ndate: %s\n%s---\n\n",
 		e.Title, e.Date.Format("2006-01-02"), tags)
+	body := strings.TrimSpace(e.Body)
+	if body == "" {
+		return fm
+	}
+	return fm + body + "\n"
 }
 
 func parse(slug, content string) (*Entry, error) {

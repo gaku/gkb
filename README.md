@@ -40,7 +40,42 @@ gkb list                          list all entries
 gkb search <query>                full-text search
 gkb search --tag <tag>            filter by tag
 gkb status                        show kb_dir and entry count
+gkb serve [-p port] [-b bind]     browse & edit over the web
 ```
+
+### Web server (`gkb serve`)
+
+`gkb serve` starts a local web UI to browse, search, **and edit** entries
+(create at `/new`, edit via the "edit" link on any entry).
+
+```bash
+gkb serve                     # http://0.0.0.0:8086
+gkb serve -p 9000             # custom port
+gkb serve -b 127.0.0.1        # loopback only (use behind a TLS proxy)
+```
+
+**Authentication.** Because the web UI can write, set credentials in `~/.gkb` to
+gate the whole site. Requests without a valid session are redirected to a `/login`
+form (password-manager friendly) that sets a signed session cookie; "sign out"
+clears it. If unset, the server runs open and warns at startup.
+
+```toml
+serve_user = "gaku"
+serve_pass = "your-password"
+```
+
+**HTTPS.** `gkb` speaks plain HTTP; terminate TLS with a reverse proxy. With
+[Tailscale](https://tailscale.com) you get a trusted cert on your tailnet with
+no port forwarding:
+
+```bash
+gkb serve -b 127.0.0.1                         # bind loopback
+tailscale serve https / http://127.0.0.1:8086  # trusted HTTPS on your tailnet
+```
+
+Caddy works the same way for a public domain (`reverse_proxy 127.0.0.1:8086`).
+Always bind `127.0.0.1` behind a proxy so the plaintext port isn't reachable on
+the LAN.
 
 ### Examples
 
@@ -72,5 +107,7 @@ Entry body goes here.
 `~/.gkb` is a TOML file:
 
 ```toml
-kb_dir = "~/self/kb"
+kb_dir     = "~/self/kb"
+serve_user = "gaku"          # optional — enables Basic Auth for `gkb serve`
+serve_pass = "your-password" # optional
 ```
