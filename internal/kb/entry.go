@@ -1,0 +1,175 @@
+package kb
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+)
+
+type Entry struct {
+	Slug  string
+	Title string
+	Tags  []string
+	Date  time.Time
+	Body  string
+}
+
+var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
+
+func Slugify(title string) string {
+	s := strings.ToLower(title)
+	s = nonSlug.ReplaceAllString(s, "-")
+	return strings.Trim(s, "-")
+}
+
+func entryPath(kbDir, slug string) string {
+	return filepath.Join(kbDir, slug+".md")
+}
+
+func Create(kbDir, title string, slug string, tags []string) (*Entry, error) {
+	if slug == "" {
+		slug = Slugify(title)
+	}
+	if slug == "" {
+		return nil, fmt.Errorf("slug is required for non-ASCII titles (use --slug)")
+	}
+	path := entryPath(kbDir, slug)
+	if _, err := os.Stat(path); err == nil {
+		return nil, fmt.Errorf("entry %q already exists", slug)
+	}
+
+	e := &Entry{
+		Slug:  slug,
+		Title: title,
+		Tags:  tags,
+		Date:  time.Now(),
+	}
+
+	if err := os.MkdirAll(kbDir, 0755); err != nil {
+		return nil, err
+	}
+	return e, os.WriteFile(path, []byte(e.marshal()), 0644)
+}
+
+func Load(kbDir, slug string) (*Entry, error) {
+	data, err := os.ReadFile(entryPath(kbDir, slug))
+	if err != nil {
+		return nil, fmt.Errorf("entry %q not found", slug)
+	}
+	return parse(slug, string(data))
+}
+
+func Delete(kbDir, slug string) error {
+	path := entryPath(kbDir, slug)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("entry %q not found", slug)
+	}
+	return os.Remove(path)
+}
+
+func Rename(kbDir, oldSlug, newSlug string) error {
+	if newSlug == "" {
+		return fmt.Errorf("new slug is required")
+	}
+	oldPath := entryPath(kbDir, oldSlug)
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		return fmt.Errorf("entry %q not found", oldSlug)
+	}
+	if oldSlug == newSlug {
+		return fmt.Errorf("new slug is the same as the old slug")
+	}
+	newPath := entryPath(kbDir, newSlug)
+	if _, err := os.Stat(newPath); err == nil {
+		return fmt.Errorf("entry %q already exists", newSlug)
+	}
+	return os.Rename(oldPath, newPath)
+}
+
+func List(kbDir string) ([]*Entry, error) {
+	files, err := filepath.Glob(filepath.Join(kbDir, "*.md"))
+	if err != nil {
+		return nil, err
+	}
+	var entries []*Entry
+	for _, f := range files {
+		slug := strings.TrimSuffix(filepath.Base(f), ".md")
+		e, err := Load(kbDir, slug)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+func Search(kbDir, query string, tag string) ([]*Entry, error) {
+	all, err := List(kbDir)
+	if err != nil {
+		return nil, err
+	}
+	q := strings.ToLower(query)
+	var results []*Entry
+	for _, e := range all {
+		if tag != "" && !e.hasTag(tag) {
+			continue
+		}
+		if q != "" {
+			text := strings.ToLower(e.Title + " " + e.Body)
+			if !strings.Contains(text, q) {
+				continue
+			}
+		}
+		results = append(results, e)
+	}
+	return results, nil
+}
+
+func (e *Entry) hasTag(tag string) bool {
+	for _, t := range e.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Entry) marshal() string {
+	tags := ""
+	if len(e.Tags) > 0 {
+		tags = "tags: " + strings.Join(e.Tags, ", ") + "\n"
+	}
+	return fmt.Sprintf("---\ntitle: %s\ndate: %s\n%s---\n\n",
+		e.Title, e.Date.Format("2006-01-02"), tags)
+}
+
+func parse(slug, content string) (*Entry, error) {
+	e := &Entry{Slug: slug}
+	if !strings.HasPrefix(content, "---") {
+		e.Body = content
+		return e, nil
+	}
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		e.Body = content
+		return e, nil
+	}
+	for _, line := range strings.Split(parts[1], "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "title:") {
+			e.Title = strings.TrimSpace(strings.TrimPrefix(line, "title:"))
+		} else if strings.HasPrefix(line, "date:") {
+			d, _ := time.Parse("2006-01-02", strings.TrimSpace(strings.TrimPrefix(line, "date:")))
+			e.Date = d
+		} else if strings.HasPrefix(line, "tags:") {
+			raw := strings.TrimSpace(strings.TrimPrefix(line, "tags:"))
+			for _, t := range strings.Split(raw, ",") {
+				e.Tags = append(e.Tags, strings.TrimSpace(t))
+			}
+		}
+	}
+	e.Body = strings.TrimSpace(parts[2])
+	return e, nil
+}
