@@ -42,7 +42,7 @@ func entryPath(kbDir, slug string) string {
 	return filepath.Join(kbDir, slug+".md")
 }
 
-func Create(kbDir, title string, slug string, tags []string) (*Entry, error) {
+func Create(kbDir, title, slug string, tags []string, body string) (*Entry, error) {
 	if slug == "" {
 		slug = Slugify(title)
 	}
@@ -59,6 +59,7 @@ func Create(kbDir, title string, slug string, tags []string) (*Entry, error) {
 		Title: title,
 		Tags:  tags,
 		Date:  time.Now(),
+		Body:  body,
 	}
 
 	if err := os.MkdirAll(kbDir, 0755); err != nil {
@@ -84,6 +85,30 @@ func Save(kbDir string, e *Entry) error {
 		return err
 	}
 	return os.WriteFile(entryPath(kbDir, e.Slug), []byte(e.Marshal()), 0644)
+}
+
+// Raw returns an entry's Markdown file exactly as stored on disk —
+// frontmatter and body, byte for byte. Useful for tools (including AI
+// agents) that want to read a page and write an edited version back without
+// needing to reconstruct the frontmatter format Marshal produces.
+func Raw(kbDir, slug string) ([]byte, error) {
+	data, err := os.ReadFile(entryPath(kbDir, slug))
+	if err != nil {
+		return nil, fmt.Errorf("entry %q not found", slug)
+	}
+	return data, nil
+}
+
+// WriteRaw overwrites an existing entry's file with data exactly as given,
+// bypassing Marshal — the write-side counterpart to Raw, for tools
+// (including AI agents) that read an entry, transform it, and write the
+// whole file back verbatim. It only overwrites an entry that already
+// exists; use Create for new ones.
+func WriteRaw(kbDir, slug string, data []byte) error {
+	if _, err := Raw(kbDir, slug); err != nil {
+		return err
+	}
+	return os.WriteFile(entryPath(kbDir, slug), data, 0644)
 }
 
 func Load(kbDir, slug string) (*Entry, error) {

@@ -1,29 +1,24 @@
 package cmd
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/gaku/gkb/internal/kb"
 	"github.com/spf13/cobra"
 )
 
 var showCmd = &cobra.Command{
 	Use:   "show <slug>",
-	Short: "Display an entry",
-	Args:  cobra.ExactArgs(1),
+	Short: "Print an entry's raw Markdown file",
+	Long: "Print an entry's raw Markdown file exactly as stored on disk (frontmatter " +
+		"and body, byte for byte) -- no rendering. Pairs with \"gkb edit\", which " +
+		"overwrites an entry from stdin: gkb show <slug> | some-transform | gkb edit <slug>.",
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		e, err := kb.Load(requireKbDir(), args[0])
+		data, err := kb.Raw(requireKbDir(), args[0])
 		if err != nil {
 			return err
 		}
-		fmt.Printf("# %s\n", e.Title)
-		fmt.Printf("date: %s\n", e.Date.Format("2006-01-02"))
-		if len(e.Tags) > 0 {
-			fmt.Printf("tags: %s\n", strings.Join(e.Tags, ", "))
-		}
-		fmt.Printf("\n%s\n", e.Body)
-		return nil
+		_, err = cmd.OutOrStdout().Write(data)
+		return err
 	},
 }
 

@@ -32,9 +32,9 @@ This sets `kb_dir` in `~/.gkb` (TOML format). The content directory is created a
 ## Usage
 
 ```
-gkb add <title> [-t tag1,tag2]   create a new entry
-gkb show <slug>                   display an entry
-gkb edit <slug>                   open entry in $EDITOR
+gkb add <title> [-t tag1,tag2]   create a new entry (reads body from stdin if redirected)
+gkb show <slug>                   print an entry's raw Markdown file
+gkb edit <slug>                   open entry in $EDITOR (overwrites from stdin if redirected)
 gkb attach <slug> <image-file|->  attach an image (or - for stdin) and print its Markdown
 gkb delete <slug>                 remove an entry
 gkb list                          list all entries
@@ -84,8 +84,10 @@ the LAN.
 
 ```bash
 gkb add "auth strategy" -t auth,infra
+gkb add "auth strategy" -t auth,infra < notes.md   # seed the body from a file
 gkb list
 gkb show auth-strategy
+gkb show auth-strategy | sed 's/foo/bar/' | gkb edit auth-strategy   # read-modify-write the raw file
 gkb attach auth-strategy ./diagram.png
 wl-paste --type image/png | gkb attach auth-strategy -   # attach a clipboard image
 gkb search auth
