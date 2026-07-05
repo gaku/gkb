@@ -1,2 +1,6 @@
 # compiled binary (built via `make build` / `go build -o gkb .`)
 /gkb
+
+# editor/tool-local settings
+/.claude/
+/.vscode/
