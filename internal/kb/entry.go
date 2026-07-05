@@ -27,6 +27,17 @@ func Slugify(title string) string {
 	return strings.Trim(s, "-")
 }
 
+var validSlugPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// ValidSlug reports whether s is safe to use as an entry slug (and thus as a
+// filename component): non-empty, ASCII letters/digits/hyphens/underscores
+// only. In particular this rules out path separators and "..", so callers
+// that accept a slug from an untrusted source (e.g. a web form) can use it
+// with entryPath without risking traversal outside kbDir.
+func ValidSlug(s string) bool {
+	return validSlugPattern.MatchString(s)
+}
+
 func entryPath(kbDir, slug string) string {
 	return filepath.Join(kbDir, slug+".md")
 }
@@ -133,6 +144,26 @@ func List(kbDir string) ([]*Entry, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ModTime.After(entries[j].ModTime) })
 	return entries, nil
+}
+
+// DuplicateTitles groups slugs by title for any title shared by more than
+// one entry. Wikilinks that reference a page by title (see
+// decisions/004-wikilinks-by-title.md) only ever resolve to one of them —
+// the most recently modified — so callers surface this as a warning instead
+// of silently picking one.
+func DuplicateTitles(entries []*Entry) map[string][]string {
+	bySlug := make(map[string][]string)
+	for _, e := range entries {
+		if e.Title != "" {
+			bySlug[e.Title] = append(bySlug[e.Title], e.Slug)
+		}
+	}
+	for title, slugs := range bySlug {
+		if len(slugs) < 2 {
+			delete(bySlug, title)
+		}
+	}
+	return bySlug
 }
 
 func Search(kbDir, query string, tag string) ([]*Entry, error) {

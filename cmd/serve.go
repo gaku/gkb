@@ -36,6 +36,10 @@ var serveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		kbDir := requireKbDir()
 
+		if entries, err := kb.List(kbDir); err == nil {
+			warnDuplicateTitles(entries)
+		}
+
 		mux := http.NewServeMux()
 		attachmentsDir := filepath.Join(kbDir, "attachments")
 		mux.Handle("/attachments/", http.StripPrefix("/attachments/", http.FileServer(http.Dir(attachmentsDir))))
@@ -82,10 +86,10 @@ var serveCmd = &cobra.Command{
 			}
 			e, err := kb.Load(kbDir, slug)
 			if err != nil {
-				http.NotFound(w, r)
+				renderNewFromWikiLink(w, slug, kbDir)
 				return
 			}
-			renderEntry(w, e)
+			renderEntry(w, e, kbDir)
 		})
 
 		mux.HandleFunc("/new", func(w http.ResponseWriter, r *http.Request) {
@@ -245,9 +249,10 @@ func sanitizeNext(next string) string {
 	return next
 }
 
-// handleSave persists an edit from the web editor. An empty slug field means a
-// new entry (slug derived from the title); otherwise the existing entry is
-// loaded so its creation date is preserved and its title/tags/body updated.
+// handleSave persists an edit from the web editor. The hidden "mode" field
+// says whether this is a new entry (slug optional, derived from the title if
+// left blank) or an edit of an existing one (slug fixed, loaded first so its
+// creation date is preserved).
 func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -258,26 +263,33 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 		return
 	}
 
+	isNew := r.FormValue("mode") != "edit"
 	slug := strings.TrimSpace(r.FormValue("slug"))
 	title := strings.TrimSpace(r.FormValue("title"))
 	body := r.FormValue("body")
 	tags := parseTags(r.FormValue("tags"))
 
+	if slug != "" && !kb.ValidSlug(slug) {
+		renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, isNew, "slug may only contain letters, numbers, hyphens, and underscores", kbDir)
+		return
+	}
 	if title == "" {
-		renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, slug == "", "title is required", kbDir)
+		renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, isNew, "title is required", kbDir)
 		return
 	}
 
 	var e *kb.Entry
-	if slug == "" {
-		// New entry.
-		newSlug := kb.Slugify(title)
+	if isNew {
+		newSlug := slug
 		if newSlug == "" {
-			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, "could not derive a slug from the title", kbDir)
+			newSlug = kb.Slugify(title)
+		}
+		if newSlug == "" {
+			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, "could not derive a slug from the title — type one in the slug field", kbDir)
 			return
 		}
 		if kb.Exists(kbDir, newSlug) {
-			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, fmt.Sprintf("entry %q already exists", newSlug), kbDir)
+			renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, true, fmt.Sprintf("entry %q already exists", newSlug), kbDir)
 			return
 		}
 		e = &kb.Entry{Slug: newSlug, Title: title, Tags: tags, Date: time.Now(), Body: body}
@@ -489,6 +501,8 @@ h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
 .body a { color: #0066cc; }
 .body img { max-width: 100%; height: auto; }
 .body .math.display { display: block; overflow-x: auto; margin: 1rem 0; }
+.backlinks { font-size: 13px; color: #888; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; }
+.backlinks a { color: #0066cc; }
 </style>
 <script>
 window.MathJax = {
@@ -507,6 +521,9 @@ window.MathJax = {
   {{range .Tags}}<span class="tag"><a href="/?tag={{.}}">{{.}}</a></span>{{end}}
 </div>
 <div class="body">{{.HTML}}</div>
+{{if .Backlinks}}
+<p class="backlinks">Linked from: {{range $i, $b := .Backlinks}}{{if $i}}, {{end}}<a href="/entry/{{$b.Slug}}">{{$b.Title}}</a>{{end}}</p>
+{{end}}
 </div>
 </body>
 </html>`))
@@ -523,14 +540,33 @@ func renderList(w http.ResponseWriter, entries []*kb.Entry, query, tag string, t
 	})
 }
 
-func renderEntry(w http.ResponseWriter, e *kb.Entry) {
+// renderNewFromWikiLink offers to create the page a broken [[wikilink]]
+// pointed at, instead of a bare 404. raw is either an ASCII slug (the older
+// [[slug]] convention — prefilled as Slug, so existing cross-references
+// keep resolving once the page is saved) or free-form title text (the
+// title-based convention — prefilled as Title, since slugs stay ASCII by
+// design and the user needs to supply one). See
+// decisions/004-wikilinks-by-title.md.
+func renderNewFromWikiLink(w http.ResponseWriter, raw, kbDir string) {
+	e := &kb.Entry{}
+	if kb.ValidSlug(raw) {
+		e.Slug = raw
+	} else {
+		e.Title = raw
+	}
+	renderEdit(w, e, true, "", kbDir)
+}
+
+func renderEntry(w http.ResponseWriter, e *kb.Entry, kbDir string) {
+	entries, _ := kb.List(kbDir)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	entryTmpl.Execute(w, map[string]any{
-		"Title": e.Title,
-		"Date":  e.Date,
-		"Tags":  e.Tags,
-		"Slug":  e.Slug,
-		"HTML":  template.HTML(renderMarkdown(e.Body)),
+		"Title":     e.Title,
+		"Date":      e.Date,
+		"Tags":      e.Tags,
+		"Slug":      e.Slug,
+		"HTML":      template.HTML(renderMarkdown(e.Body, entries)),
+		"Backlinks": backlinks(entries, e.Slug),
 	})
 }
 
@@ -576,12 +612,20 @@ button:hover { background: #0055aa; }
 <h1>{{if .IsNew}}new entry{{else}}edit{{end}}</h1>
 {{if .Err}}<p class="err">{{.Err}}</p>{{end}}
 <form method="post" action="/save">
-  <input type="hidden" name="slug" value="{{.Slug}}">
+  <input type="hidden" name="mode" value="{{if .IsNew}}new{{else}}edit{{end}}">
+  {{if not .IsNew}}<input type="hidden" name="slug" value="{{.Slug}}">{{end}}
   <div class="field">
     <label>title</label>
     <input type="text" name="title" value="{{.Title}}" autofocus>
     {{if not .IsNew}}<p class="hint">slug: {{.Slug}} (fixed — use the CLI to rename)</p>{{end}}
   </div>
+  {{if .IsNew}}
+  <div class="field">
+    <label>slug</label>
+    <input type="text" name="slug" value="{{.Slug}}" placeholder="derived from the title if left blank">
+    <p class="hint">only needed if the title isn't ASCII, or to pick something else</p>
+  </div>
+  {{end}}
   <div class="field">
     <label>tags (comma-separated)</label>
     <input type="text" name="tags" value="{{.TagStr}}">
@@ -765,17 +809,78 @@ func renderLogin(w http.ResponseWriter, next, errMsg string) {
 	loginTmpl.Execute(w, map[string]any{"Next": next, "Err": errMsg})
 }
 
-var wikiLink = regexp.MustCompile(`\[\[([a-zA-Z0-9_-]+)(?:\|([^\]]+))?\]\]`)
+var wikiLink = regexp.MustCompile(`\[\[([^\]|]+)(?:\|([^\]]+))?\]\]`)
 
-func expandWikiLinks(body string) string {
+// wikiLinkIndex resolves a [[target]] to the slug it refers to: target is
+// tried as a slug first (existing behavior, unchanged); if that doesn't
+// match any entry, it's tried against every entry's Title instead, so a
+// non-ASCII-titled page (slugs are kept ASCII by design) can be linked by
+// its title directly — e.g. [[ローマ]] — without knowing or repeating its
+// slug. See decisions/004-wikilinks-by-title.md.
+type wikiLinkIndex struct {
+	slugs  map[string]bool
+	titles map[string]string
+}
+
+func buildWikiLinkIndex(entries []*kb.Entry) *wikiLinkIndex {
+	idx := &wikiLinkIndex{
+		slugs:  make(map[string]bool, len(entries)),
+		titles: make(map[string]string, len(entries)),
+	}
+	for _, e := range entries {
+		idx.slugs[e.Slug] = true
+		if e.Title != "" {
+			if _, exists := idx.titles[e.Title]; !exists {
+				idx.titles[e.Title] = e.Slug
+			}
+		}
+	}
+	return idx
+}
+
+// resolve returns the slug target refers to, falling back to target itself
+// (today's graceful-degradation behavior for a page that doesn't exist yet).
+func (idx *wikiLinkIndex) resolve(target string) string {
+	if idx.slugs[target] {
+		return target
+	}
+	if slug, ok := idx.titles[target]; ok {
+		return slug
+	}
+	return target
+}
+
+// expandWikiLinks turns [[target]] / [[target|text]] into Markdown links.
+func expandWikiLinks(body string, entries []*kb.Entry) string {
+	idx := buildWikiLinkIndex(entries)
 	return wikiLink.ReplaceAllStringFunc(body, func(match string) string {
 		m := wikiLink.FindStringSubmatch(match)
-		slug, text := m[1], m[2]
+		target, text := m[1], m[2]
 		if text == "" {
-			text = slug
+			text = target
 		}
-		return fmt.Sprintf("[%s](/entry/%s)", text, slug)
+		return fmt.Sprintf("[%s](/entry/%s)", text, idx.resolve(target))
 	})
+}
+
+// backlinks returns entries whose body contains a [[wikilink]] resolving to
+// slug (same resolution rules as expandWikiLinks), for display as "linked
+// from" at the bottom of an entry page.
+func backlinks(entries []*kb.Entry, slug string) []*kb.Entry {
+	idx := buildWikiLinkIndex(entries)
+	var links []*kb.Entry
+	for _, e := range entries {
+		if e.Slug == slug {
+			continue
+		}
+		for _, m := range wikiLink.FindAllStringSubmatch(e.Body, -1) {
+			if idx.resolve(m[1]) == slug {
+				links = append(links, e)
+				break
+			}
+		}
+	}
+	return links
 }
 
 var (
@@ -805,8 +910,8 @@ func protectMath(body string) (string, []string) {
 	return body, spans
 }
 
-func renderMarkdown(body string) string {
-	body = expandWikiLinks(body)
+func renderMarkdown(body string, entries []*kb.Entry) string {
+	body = expandWikiLinks(body, entries)
 	body = strings.ReplaceAll(body, "](attachments/", "](/attachments/")
 	body, spans := protectMath(body)
 	p := parser.NewWithExtensions(parser.CommonExtensions | parser.AutoHeadingIDs)
