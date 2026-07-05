@@ -5,16 +5,18 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
 type Entry struct {
-	Slug  string
-	Title string
-	Tags  []string
-	Date  time.Time
-	Body  string
+	Slug    string
+	Title   string
+	Tags    []string
+	Date    time.Time
+	Body    string
+	ModTime time.Time
 }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
@@ -74,11 +76,19 @@ func Save(kbDir string, e *Entry) error {
 }
 
 func Load(kbDir, slug string) (*Entry, error) {
-	data, err := os.ReadFile(entryPath(kbDir, slug))
+	path := entryPath(kbDir, slug)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("entry %q not found", slug)
 	}
-	return parse(slug, string(data))
+	e, err := parse(slug, string(data))
+	if err != nil {
+		return nil, err
+	}
+	if info, err := os.Stat(path); err == nil {
+		e.ModTime = info.ModTime()
+	}
+	return e, nil
 }
 
 func Delete(kbDir, slug string) error {
@@ -121,6 +131,7 @@ func List(kbDir string) ([]*Entry, error) {
 		}
 		entries = append(entries, e)
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ModTime.After(entries[j].ModTime) })
 	return entries, nil
 }
 

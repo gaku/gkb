@@ -1,4 +1,4 @@
-# gkb — gaku's knowledge base
+# gkb — Gaku's knowledge base
 
 A minimal CLI for managing a personal knowledge base in plain markdown files.
 
@@ -27,7 +27,7 @@ Create `~/.gkb` config by running:
 gkb init ~/self/kb
 ```
 
-This sets `kb_dir` in `~/.gkb` (TOML format). The directory is created automatically on first `add`.
+This sets `kb_dir` in `~/.gkb` (TOML format). The content directory is created automatically on first `add`.
 
 ## Usage
 
@@ -35,6 +35,7 @@ This sets `kb_dir` in `~/.gkb` (TOML format). The directory is created automatic
 gkb add <title> [-t tag1,tag2]   create a new entry
 gkb show <slug>                   display an entry
 gkb edit <slug>                   open entry in $EDITOR
+gkb attach <slug> <image-file|->  attach an image (or - for stdin) and print its Markdown
 gkb delete <slug>                 remove an entry
 gkb list                          list all entries
 gkb search <query>                full-text search
@@ -46,7 +47,9 @@ gkb serve [-p port] [-b bind]     browse & edit over the web
 ### Web server (`gkb serve`)
 
 `gkb serve` starts a local web UI to browse, search, **and edit** entries
-(create at `/new`, edit via the "edit" link on any entry).
+(create at `/new`, edit via the "edit" link on any entry). Existing entries can
+also accept images by drag-and-drop; uploads are stored flat in `attachments/`
+and shown as copyable Markdown on the edit page.
 
 ```bash
 gkb serve                     # http://0.0.0.0:8086
@@ -83,6 +86,8 @@ the LAN.
 gkb add "auth strategy" -t auth,infra
 gkb list
 gkb show auth-strategy
+gkb attach auth-strategy ./diagram.png
+wl-paste --type image/png | gkb attach auth-strategy -   # attach a clipboard image
 gkb search auth
 gkb search --tag infra
 gkb delete auth-strategy

@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,6 +37,8 @@ var serveCmd = &cobra.Command{
 		kbDir := requireKbDir()
 
 		mux := http.NewServeMux()
+		attachmentsDir := filepath.Join(kbDir, "attachments")
+		mux.Handle("/attachments/", http.StripPrefix("/attachments/", http.FileServer(http.Dir(attachmentsDir))))
 
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query().Get("q")
@@ -50,7 +55,21 @@ var serveCmd = &cobra.Command{
 				http.Error(w, err.Error(), 500)
 				return
 			}
-			renderList(w, entries, q, tag)
+
+			// Stats reflect the whole knowledge base, not just the filtered
+			// results, so they still read as "5 pages" while a search narrows
+			// the list down to 1.
+			totalEntries := len(entries)
+			if q != "" || tag != "" {
+				all, err := kb.List(kbDir)
+				if err != nil {
+					http.Error(w, err.Error(), 500)
+					return
+				}
+				totalEntries = len(all)
+			}
+
+			renderList(w, entries, q, tag, totalEntries, kb.CountAttachments(kbDir))
 		})
 
 		mux.HandleFunc("/entry/", func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +89,7 @@ var serveCmd = &cobra.Command{
 		})
 
 		mux.HandleFunc("/new", func(w http.ResponseWriter, r *http.Request) {
-			renderEdit(w, &kb.Entry{}, true, "")
+			renderEdit(w, &kb.Entry{}, true, "", kbDir)
 		})
 
 		mux.HandleFunc("/edit/", func(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +99,11 @@ var serveCmd = &cobra.Command{
 				http.NotFound(w, r)
 				return
 			}
-			renderEdit(w, e, false, "")
+			renderEdit(w, e, false, "", kbDir)
+		})
+
+		mux.HandleFunc("/upload/", func(w http.ResponseWriter, r *http.Request) {
+			handleUpload(w, r, kbDir)
 		})
 
 		mux.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
@@ -241,7 +264,7 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 	tags := parseTags(r.FormValue("tags"))
 
 	if title == "" {
-		renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, slug == "", "title is required")
+		renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, slug == "", "title is required", kbDir)
 		return
 	}
 
@@ -250,11 +273,11 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 		// New entry.
 		newSlug := kb.Slugify(title)
 		if newSlug == "" {
-			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, "could not derive a slug from the title")
+			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, "could not derive a slug from the title", kbDir)
 			return
 		}
 		if kb.Exists(kbDir, newSlug) {
-			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, fmt.Sprintf("entry %q already exists", newSlug))
+			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, fmt.Sprintf("entry %q already exists", newSlug), kbDir)
 			return
 		}
 		e = &kb.Entry{Slug: newSlug, Title: title, Tags: tags, Date: time.Now(), Body: body}
@@ -276,6 +299,51 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 		return
 	}
 	http.Redirect(w, r, "/entry/"+e.Slug, http.StatusSeeOther)
+}
+
+// handleUpload stores one image under a flat, page-prefixed filename. Requiring
+// the entry to exist prevents uploads from becoming detached from a page before
+// the page's slug has been established.
+func handleUpload(w http.ResponseWriter, r *http.Request, kbDir string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	slug := strings.TrimPrefix(r.URL.Path, "/upload/")
+	if _, err := kb.Load(kbDir, slug); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, kb.MaxAttachmentSize+(1<<20))
+	if err := r.ParseMultipartForm(kb.MaxAttachmentSize); err != nil {
+		http.Error(w, "image is too large or the upload is invalid", http.StatusBadRequest)
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "image file is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	a, err := kb.StoreAttachment(kbDir, slug, header.Filename, file)
+	if err != nil {
+		switch {
+		case errors.Is(err, kb.ErrInvalidAttachmentSlug):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, kb.ErrUnsupportedImage):
+			http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
+		case errors.Is(err, kb.ErrAttachmentTooLarge):
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		default:
+			http.Error(w, "could not store image", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a)
 }
 
 // parseTags splits a comma-separated tag string into trimmed, non-empty tags.
@@ -357,6 +425,7 @@ li:last-child { border-bottom: none; }
 a { color: #1a1a1a; text-decoration: none; font-weight: 500; }
 a:hover { color: #0066cc; }
 .meta { font-size: 13px; color: #888; }
+.stats { font-size: 13px; color: #888; margin-bottom: 1.25rem; }
 .tag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 4px; background: #efefed; color: #555; margin-left: 4px; }
 .tag a { color: #555; font-weight: 400; }
 .empty { color: #888; font-size: 14px; }
@@ -366,7 +435,8 @@ a:hover { color: #0066cc; }
 </head>
 <body>
 <div class="wrap">
-<h1>gkb{{if .Authed}} <a class="signout" href="/logout">sign out</a>{{end}}</h1>
+<h1><a href="/">gkb</a>{{if .Authed}} <a class="signout" href="/logout">sign out</a>{{end}}</h1>
+<p class="stats">{{.TotalEntries}} page{{if ne .TotalEntries 1}}s{{end}} · {{.TotalAttachments}} attachment{{if ne .TotalAttachments 1}}s{{end}}</p>
 <form method="get" action="/">
   <input type="text" name="q" placeholder="search..." value="{{.Query}}">
   <button type="submit">search</button>
@@ -417,6 +487,7 @@ h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
 .body pre { background: #efefed; padding: 1rem; border-radius: 6px; overflow-x: auto; margin-bottom: 1rem; }
 .body pre code { background: none; padding: 0; }
 .body a { color: #0066cc; }
+.body img { max-width: 100%; height: auto; }
 .body .math.display { display: block; overflow-x: auto; margin: 1rem 0; }
 </style>
 <script>
@@ -440,13 +511,15 @@ window.MathJax = {
 </body>
 </html>`))
 
-func renderList(w http.ResponseWriter, entries []*kb.Entry, query, tag string) {
+func renderList(w http.ResponseWriter, entries []*kb.Entry, query, tag string, totalEntries, totalAttachments int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	listTmpl.Execute(w, map[string]any{
-		"Entries": entries,
-		"Query":   query,
-		"Tag":     tag,
-		"Authed":  cfg.ServeUser != "" && cfg.ServePass != "",
+		"Entries":          entries,
+		"Query":            query,
+		"Tag":              tag,
+		"Authed":           cfg.ServeUser != "" && cfg.ServePass != "",
+		"TotalEntries":     totalEntries,
+		"TotalAttachments": totalAttachments,
 	})
 }
 
@@ -485,6 +558,16 @@ button:hover { background: #0055aa; }
 .cancel:hover { text-decoration: underline; }
 .err { color: #b00020; font-size: 14px; margin-bottom: 1rem; }
 .hint { font-size: 12px; color: #999; margin-top: 4px; }
+.dropzone { border: 2px dashed #ccc; border-radius: 6px; padding: 1.25rem; text-align: center; color: #777; cursor: pointer; background: #fff; }
+.dropzone.dragging { border-color: #0066cc; background: #f2f8ff; color: #0066cc; }
+.dropzone input { display: none; }
+.upload-status { min-height: 1.2em; font-size: 12px; color: #777; margin-top: 5px; }
+.attachments { list-style: none; margin-top: 8px; }
+.attachments li { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; }
+.attachments .thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid #ddd; flex-shrink: 0; background: #efefed; }
+.attachments code { flex: 1; overflow-wrap: anywhere; padding: 5px 7px; border-radius: 4px; background: #efefed; font-size: 12px; }
+.copy { padding: 4px 9px; border-color: #ccc; background: #fff; color: #333; font-size: 12px; }
+.copy:hover { background: #f0f0ee; }
 </style>
 </head>
 <body>
@@ -507,24 +590,131 @@ button:hover { background: #0055aa; }
     <label>body (markdown)</label>
     <textarea name="body" spellcheck="false">{{.Body}}</textarea>
   </div>
+  {{if not .IsNew}}
+  <div class="field">
+    <label>images</label>
+    <div class="dropzone" id="dropzone">
+      drop, paste, or click to choose an image
+      <input id="image-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp">
+    </div>
+    <p class="upload-status" id="upload-status"></p>
+    <ul class="attachments" id="attachments">
+      {{range .Attachments}}<li><img class="thumb" src="/attachments/{{.Name}}" alt=""><code>{{.Markup}}</code><button class="copy" type="button">copy</button></li>{{end}}
+    </ul>
+  </div>
+  {{end}}
   <div class="actions">
     <button type="submit">save</button>
     <a class="cancel" href="{{if .IsNew}}/{{else}}/entry/{{.Slug}}{{end}}">cancel</a>
   </div>
 </form>
 </div>
+{{if not .IsNew}}
+<script>
+const zone = document.getElementById('dropzone');
+const input = document.getElementById('image-input');
+const status = document.getElementById('upload-status');
+const list = document.getElementById('attachments');
+
+function addAttachment(attachment) {
+  const li = document.createElement('li');
+  const thumb = document.createElement('img');
+  const code = document.createElement('code');
+  const button = document.createElement('button');
+  thumb.className = 'thumb';
+  thumb.src = '/attachments/' + attachment.name;
+  thumb.alt = '';
+  code.textContent = attachment.markup;
+  button.type = 'button';
+  button.className = 'copy';
+  button.textContent = 'copy';
+  li.append(thumb, code, button);
+  list.append(li);
+}
+
+async function uploadImage(file) {
+  status.textContent = 'uploading…';
+  const data = new FormData();
+  data.append('image', file);
+  try {
+    const response = await fetch('/upload/{{.Slug}}', {method: 'POST', body: data});
+    if (!response.ok) throw new Error((await response.text()).trim());
+    const attachment = await response.json();
+    addAttachment(attachment);
+    status.textContent = 'uploaded';
+    return attachment;
+  } catch (error) {
+    status.textContent = error.message || 'upload failed';
+    return null;
+  }
+}
+
+async function upload(file) {
+  if (!file) return;
+  await uploadImage(file);
+  input.value = '';
+}
+
+zone.addEventListener('click', () => input.click());
+input.addEventListener('change', () => upload(input.files[0]));
+for (const event of ['dragenter', 'dragover']) {
+  zone.addEventListener(event, e => { e.preventDefault(); zone.classList.add('dragging'); });
+}
+for (const event of ['dragleave', 'drop']) {
+  zone.addEventListener(event, e => { e.preventDefault(); zone.classList.remove('dragging'); });
+}
+zone.addEventListener('drop', e => upload(e.dataTransfer.files[0]));
+
+const bodyField = document.querySelector('textarea[name=body]');
+bodyField.addEventListener('paste', async e => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+    e.preventDefault();
+    const file = item.getAsFile();
+    const attachment = await uploadImage(file);
+    if (attachment) bodyField.setRangeText(attachment.markup, bodyField.selectionStart, bodyField.selectionEnd, 'end');
+    break;
+  }
+});
+list.addEventListener('click', async e => {
+  if (!e.target.classList.contains('copy')) return;
+  const markup = e.target.previousElementSibling.textContent;
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(markup);
+    } else {
+      const temporary = document.createElement('textarea');
+      temporary.value = markup;
+      temporary.style.position = 'fixed';
+      temporary.style.opacity = '0';
+      document.body.append(temporary);
+      temporary.select();
+      document.execCommand('copy');
+      temporary.remove();
+    }
+    e.target.textContent = 'copied';
+    setTimeout(() => { e.target.textContent = 'copy'; }, 1200);
+  } catch (_) {
+    status.textContent = 'copy failed; select the Markdown manually';
+  }
+});
+</script>
+{{end}}
 </body>
 </html>`))
 
-func renderEdit(w http.ResponseWriter, e *kb.Entry, isNew bool, errMsg string) {
+func renderEdit(w http.ResponseWriter, e *kb.Entry, isNew bool, errMsg, kbDir string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	editTmpl.Execute(w, map[string]any{
-		"IsNew":  isNew,
-		"Slug":   e.Slug,
-		"Title":  e.Title,
-		"TagStr": strings.Join(e.Tags, ", "),
-		"Body":   e.Body,
-		"Err":    errMsg,
+		"IsNew":       isNew,
+		"Slug":        e.Slug,
+		"Title":       e.Title,
+		"TagStr":      strings.Join(e.Tags, ", "),
+		"Body":        e.Body,
+		"Err":         errMsg,
+		"Attachments": kb.ListAttachments(kbDir, e.Slug),
 	})
 }
 
@@ -617,6 +807,7 @@ func protectMath(body string) (string, []string) {
 
 func renderMarkdown(body string) string {
 	body = expandWikiLinks(body)
+	body = strings.ReplaceAll(body, "](attachments/", "](/attachments/")
 	body, spans := protectMath(body)
 	p := parser.NewWithExtensions(parser.CommonExtensions | parser.AutoHeadingIDs)
 	r := html.NewRenderer(html.RendererOptions{Flags: html.CommonFlags})
