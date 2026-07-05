@@ -540,6 +540,11 @@ h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
 .body a { color: #0066cc; }
 .body img { max-width: 100%; height: auto; }
 .body .math.display { display: block; overflow-x: auto; margin: 1rem 0; }
+.body table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
+.body th, .body td { text-align: left; padding: 10px 20px 10px 0; vertical-align: top; }
+.body th { font-weight: 600; color: #111; border-bottom: 2px solid #ddd; }
+.body td { border-bottom: 1px solid #eee; }
+.body tr:last-child td { border-bottom: none; }
 .backlinks { font-size: 13px; color: #888; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; }
 .backlinks a { color: #0066cc; }
 .section-edit { font-size: 0.7rem; font-weight: 400; color: #999; text-decoration: none; margin-left: 8px; vertical-align: middle; }
