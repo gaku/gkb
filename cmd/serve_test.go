@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -201,5 +202,139 @@ func TestHandleSaveRejectsInvalidSlug(t *testing.T) {
 	}
 	if kb.Exists(dir, "passwd") || kb.Exists(filepath.Dir(dir), "etc/passwd") {
 		t.Fatal("entry should not have been written outside kbDir")
+	}
+}
+
+const sectionTestBody = `# Intro
+
+intro text
+
+## Culture
+
+culture text
+
+### Economy
+
+economy text
+
+## Trade
+
+trade text`
+
+func TestSplitSectionsIncludesNestedSubsections(t *testing.T) {
+	secs := splitSections(sectionTestBody)
+	if len(secs) != 4 {
+		t.Fatalf("got %d sections: %#v", len(secs), secs)
+	}
+	culture := sectionText(sectionTestBody, secs, 1)
+	if !strings.Contains(culture, "## Culture") || !strings.Contains(culture, "### Economy") || !strings.Contains(culture, "economy text") {
+		t.Fatalf("Culture section should include its Economy subsection, got %q", culture)
+	}
+	if strings.Contains(culture, "## Trade") {
+		t.Fatalf("Culture section should stop before the next ## heading, got %q", culture)
+	}
+}
+
+func TestSplitSectionsIgnoresHeadingsInsideFencedCode(t *testing.T) {
+	body := "# Real Heading\n\n```markdown\n## Not a real heading\n```\n\ntext"
+	secs := splitSections(body)
+	if len(secs) != 1 {
+		t.Fatalf("got %d sections: %#v", len(secs), secs)
+	}
+}
+
+func TestReplaceSectionLeavesRestUntouched(t *testing.T) {
+	secs := splitSections(sectionTestBody)
+	got := replaceSection(sectionTestBody, secs, 1, "## Culture (edited)\n\nnew text")
+	if strings.Contains(got, "### Economy") {
+		t.Fatalf("subsection should have been replaced along with its parent, got %q", got)
+	}
+	if !strings.Contains(got, "# Intro") || !strings.Contains(got, "## Trade") || !strings.Contains(got, "trade text") {
+		t.Fatalf("sections outside the edited one should be untouched, got %q", got)
+	}
+	if !strings.Contains(got, "## Culture (edited)") || !strings.Contains(got, "new text") {
+		t.Fatalf("edited section content missing, got %q", got)
+	}
+}
+
+// TestReplaceSectionInsertsBlankLineBeforeNextHeading is a regression test:
+// a replacement that doesn't end in a blank line (easy to do — nothing about
+// the section editor calls attention to that trailing line) must not get
+// glued directly onto the next section's heading.
+func TestReplaceSectionInsertsBlankLineBeforeNextHeading(t *testing.T) {
+	body := "# a\n\nhello\n\n# b\n\nworld"
+	secs := splitSections(body)
+	got := replaceSection(body, secs, 0, "# a\n\nnew content")
+	want := "# a\n\nnew content\n\n# b\n\nworld"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSectionTextTrimsTrailingSeparatorBlankLine(t *testing.T) {
+	body := "# a\n\nhello\n\n# b\n\nworld"
+	secs := splitSections(body)
+	got := sectionText(body, secs, 0)
+	want := "# a\n\nhello"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestAddSectionEditLinksIndexMatchesSplitSections(t *testing.T) {
+	entries := []*kb.Entry{{Slug: "page", Body: sectionTestBody}}
+	html := renderMarkdown(sectionTestBody, entries)
+	html = addSectionEditLinks(html, "page")
+	secs := splitSections(sectionTestBody)
+	for i := range secs {
+		want := fmt.Sprintf(`/edit/page?section=%d`, i)
+		if !strings.Contains(html, want) {
+			t.Fatalf("missing edit link %q in %s", want, html)
+		}
+	}
+	if strings.Count(html, "section-edit") != len(secs) {
+		t.Fatalf("expected %d edit links, got html %s", len(secs), html)
+	}
+}
+
+func TestHandleSaveWithSectionOnlyReplacesThatSection(t *testing.T) {
+	dir := t.TempDir()
+	if err := kb.Save(dir, &kb.Entry{Slug: "page", Title: "Page", Date: time.Now(), Body: sectionTestBody}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	form := url.Values{
+		"mode": {"edit"}, "slug": {"page"}, "title": {"Page"}, "section": {"1"},
+		"body": {"## Culture (edited)\n\nnew text"},
+	}
+	handleSave(recorder, saveRequest(t, form), dir)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	e, err := kb.Load(dir, "page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(e.Body, "### Economy") {
+		t.Fatalf("Economy subsection should have been replaced with its parent, got %q", e.Body)
+	}
+	if !strings.Contains(e.Body, "# Intro") || !strings.Contains(e.Body, "## Trade") {
+		t.Fatalf("other sections should be untouched, got %q", e.Body)
+	}
+	if !strings.Contains(e.Body, "## Culture (edited)") {
+		t.Fatalf("edited section missing, got %q", e.Body)
+	}
+}
+
+func TestHandleSaveWithStaleSectionIndexReturnsConflict(t *testing.T) {
+	dir := t.TempDir()
+	if err := kb.Save(dir, &kb.Entry{Slug: "page", Title: "Page", Date: time.Now(), Body: "# Only Heading\n\ntext"}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	form := url.Values{"mode": {"edit"}, "slug": {"page"}, "title": {"Page"}, "section": {"5"}, "body": {"whatever"}}
+	handleSave(recorder, saveRequest(t, form), dir)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

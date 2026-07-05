@@ -103,6 +103,13 @@ var serveCmd = &cobra.Command{
 				http.NotFound(w, r)
 				return
 			}
+			if raw := r.URL.Query().Get("section"); raw != "" {
+				secs := splitSections(e.Body)
+				if idx, err := strconv.Atoi(raw); err == nil && idx >= 0 && idx < len(secs) {
+					renderEditSection(w, e, secs, idx, "", kbDir)
+					return
+				}
+			}
 			renderEdit(w, e, false, "", kbDir)
 		})
 
@@ -268,13 +275,35 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 	title := strings.TrimSpace(r.FormValue("title"))
 	body := r.FormValue("body")
 	tags := parseTags(r.FormValue("tags"))
+	section := strings.TrimSpace(r.FormValue("section"))
+
+	// renderErr re-renders the form being submitted, preserving section
+	// context (if any) so a resubmission after fixing the error still
+	// targets the same section instead of silently becoming a full-body
+	// save.
+	renderErr := func(errMsg string) {
+		sectionHeading := ""
+		if section != "" {
+			if existing, err := kb.Load(kbDir, slug); err == nil {
+				secs := splitSections(existing.Body)
+				if idx, err := strconv.Atoi(section); err == nil && idx >= 0 && idx < len(secs) {
+					sectionHeading = strings.TrimSpace(strings.TrimLeft(secs[idx].Heading, "#"))
+				}
+			}
+		}
+		renderEditView(w, editView{
+			IsNew: isNew, Slug: slug, Title: title, Tags: tags, Body: body,
+			Err: errMsg, Section: section, SectionHeading: sectionHeading,
+			Attachments: kb.ListAttachments(kbDir, slug),
+		})
+	}
 
 	if slug != "" && !kb.ValidSlug(slug) {
-		renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, isNew, "slug may only contain letters, numbers, hyphens, and underscores", kbDir)
+		renderErr("slug may only contain letters, numbers, hyphens, and underscores")
 		return
 	}
 	if title == "" {
-		renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, isNew, "title is required", kbDir)
+		renderErr("title is required")
 		return
 	}
 
@@ -285,11 +314,11 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 			newSlug = kb.Slugify(title)
 		}
 		if newSlug == "" {
-			renderEdit(w, &kb.Entry{Title: title, Tags: tags, Body: body}, true, "could not derive a slug from the title — type one in the slug field", kbDir)
+			renderErr("could not derive a slug from the title — type one in the slug field")
 			return
 		}
 		if kb.Exists(kbDir, newSlug) {
-			renderEdit(w, &kb.Entry{Slug: slug, Title: title, Tags: tags, Body: body}, true, fmt.Sprintf("entry %q already exists", newSlug), kbDir)
+			renderErr(fmt.Sprintf("entry %q already exists", newSlug))
 			return
 		}
 		e = &kb.Entry{Slug: newSlug, Title: title, Tags: tags, Date: time.Now(), Body: body}
@@ -300,9 +329,19 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 			http.NotFound(w, r)
 			return
 		}
+		if section != "" {
+			secs := splitSections(existing.Body)
+			idx, convErr := strconv.Atoi(section)
+			if convErr != nil || idx < 0 || idx >= len(secs) {
+				http.Error(w, "this section changed since you started editing — reload the page and try again", http.StatusConflict)
+				return
+			}
+			existing.Body = replaceSection(existing.Body, secs, idx, body)
+		} else {
+			existing.Body = body
+		}
 		existing.Title = title
 		existing.Tags = tags
-		existing.Body = body
 		e = existing
 	}
 
@@ -503,6 +542,8 @@ h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
 .body .math.display { display: block; overflow-x: auto; margin: 1rem 0; }
 .backlinks { font-size: 13px; color: #888; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; }
 .backlinks a { color: #0066cc; }
+.section-edit { font-size: 0.7rem; font-weight: 400; color: #999; text-decoration: none; margin-left: 8px; vertical-align: middle; }
+.section-edit:hover { color: #0066cc; }
 </style>
 <script>
 window.MathJax = {
@@ -565,7 +606,7 @@ func renderEntry(w http.ResponseWriter, e *kb.Entry, kbDir string) {
 		"Date":      e.Date,
 		"Tags":      e.Tags,
 		"Slug":      e.Slug,
-		"HTML":      template.HTML(renderMarkdown(e.Body, entries)),
+		"HTML":      template.HTML(addSectionEditLinks(renderMarkdown(e.Body, entries), e.Slug)),
 		"Backlinks": backlinks(entries, e.Slug),
 	})
 }
@@ -608,12 +649,13 @@ button:hover { background: #0055aa; }
 </head>
 <body>
 <div class="wrap">
-<div class="nav"><a href="/">← all entries</a>{{if not .IsNew}} · <a href="/entry/{{.Slug}}">view</a>{{end}}</div>
-<h1>{{if .IsNew}}new entry{{else}}edit{{end}}</h1>
+<div class="nav"><a href="/">← all entries</a>{{if not .IsNew}} · <a href="/entry/{{.Slug}}">view</a>{{end}}{{if .Section}} · <a href="/edit/{{.Slug}}">edit full page</a>{{end}}</div>
+<h1>{{if .IsNew}}new entry{{else if .Section}}editing section: {{.SectionHeading}}{{else}}edit{{end}}</h1>
 {{if .Err}}<p class="err">{{.Err}}</p>{{end}}
 <form method="post" action="/save">
   <input type="hidden" name="mode" value="{{if .IsNew}}new{{else}}edit{{end}}">
   {{if not .IsNew}}<input type="hidden" name="slug" value="{{.Slug}}">{{end}}
+  {{if .Section}}<input type="hidden" name="section" value="{{.Section}}">{{end}}
   <div class="field">
     <label>title</label>
     <input type="text" name="title" value="{{.Title}}" autofocus>
@@ -633,6 +675,7 @@ button:hover { background: #0055aa; }
   <div class="field">
     <label>body (markdown)</label>
     <textarea name="body" spellcheck="false">{{.Body}}</textarea>
+    {{if .Section}}<p class="hint">only this section will be saved — the rest of the page is untouched</p>{{end}}
   </div>
   {{if not .IsNew}}
   <div class="field">
@@ -749,16 +792,61 @@ list.addEventListener('click', async e => {
 </body>
 </html>`))
 
-func renderEdit(w http.ResponseWriter, e *kb.Entry, isNew bool, errMsg, kbDir string) {
+// editView holds everything the edit template needs, so both a full-page
+// edit and a single-section edit (see renderEditSection) can share one
+// renderer.
+type editView struct {
+	IsNew          bool
+	Slug           string
+	Title          string
+	Tags           []string
+	Body           string
+	Err            string
+	Section        string // "" for a full-page edit, else the section index
+	SectionHeading string
+	Attachments    []kb.Attachment
+}
+
+func renderEditView(w http.ResponseWriter, v editView) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	editTmpl.Execute(w, map[string]any{
-		"IsNew":       isNew,
-		"Slug":        e.Slug,
-		"Title":       e.Title,
-		"TagStr":      strings.Join(e.Tags, ", "),
-		"Body":        e.Body,
-		"Err":         errMsg,
-		"Attachments": kb.ListAttachments(kbDir, e.Slug),
+		"IsNew":          v.IsNew,
+		"Slug":           v.Slug,
+		"Title":          v.Title,
+		"TagStr":         strings.Join(v.Tags, ", "),
+		"Body":           v.Body,
+		"Err":            v.Err,
+		"Section":        v.Section,
+		"SectionHeading": v.SectionHeading,
+		"Attachments":    v.Attachments,
+	})
+}
+
+func renderEdit(w http.ResponseWriter, e *kb.Entry, isNew bool, errMsg, kbDir string) {
+	renderEditView(w, editView{
+		IsNew:       isNew,
+		Slug:        e.Slug,
+		Title:       e.Title,
+		Tags:        e.Tags,
+		Body:        e.Body,
+		Err:         errMsg,
+		Attachments: kb.ListAttachments(kbDir, e.Slug),
+	})
+}
+
+// renderEditSection renders the editor scoped to one heading section (see
+// splitSections), reached via the "edit" links addSectionEditLinks adds to
+// each heading on the entry page.
+func renderEditSection(w http.ResponseWriter, e *kb.Entry, secs []mdSection, idx int, errMsg, kbDir string) {
+	renderEditView(w, editView{
+		Slug:           e.Slug,
+		Title:          e.Title,
+		Tags:           e.Tags,
+		Body:           sectionText(e.Body, secs, idx),
+		Err:            errMsg,
+		Section:        strconv.Itoa(idx),
+		SectionHeading: strings.TrimSpace(strings.TrimLeft(secs[idx].Heading, "#")),
+		Attachments:    kb.ListAttachments(kbDir, e.Slug),
 	})
 }
 
@@ -881,6 +969,113 @@ func backlinks(entries []*kb.Entry, slug string) []*kb.Entry {
 		}
 	}
 	return links
+}
+
+// mdSection is a heading and everything under it, including nested
+// subsections — i.e. it runs from its heading line down to (but not
+// including) the next heading of the same or shallower level, or the end of
+// the document. Start/End are line indices into the body it was split from.
+type mdSection struct {
+	Level   int
+	Heading string
+	Start   int
+	End     int
+}
+
+var (
+	headingLine = regexp.MustCompile(`^(#{1,6})\s+\S`)
+	fenceLine   = regexp.MustCompile("^(```|~~~)")
+)
+
+// splitSections finds heading-delimited sections in body, skipping any '#'
+// that appears inside a fenced code block (e.g. a markdown example inside
+// ```). The result mirrors the <h1>-<h6> tags renderMarkdown will produce
+// for the same body, in the same order, which lets section-edit links use a
+// plain positional index (see addSectionEditLinks).
+func splitSections(body string) []mdSection {
+	lines := strings.Split(body, "\n")
+	var secs []mdSection
+	inFence := false
+	for i, line := range lines {
+		if fenceLine.MatchString(line) {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		m := headingLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		secs = append(secs, mdSection{Level: len(m[1]), Heading: line, Start: i, End: len(lines)})
+	}
+	for i := range secs {
+		for j := i + 1; j < len(secs); j++ {
+			if secs[j].Level <= secs[i].Level {
+				secs[i].End = secs[j].Start
+				break
+			}
+		}
+	}
+	return secs
+}
+
+// trimBlankLines drops leading and trailing blank lines, so callers that
+// splice sections back together can add back exactly the separator they
+// need instead of depending on whichever whitespace happened to survive
+// editing.
+func trimBlankLines(lines []string) []string {
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	end := len(lines)
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return lines[start:end]
+}
+
+// sectionText returns the raw markdown of secs[idx], heading line included,
+// with the blank separator line before the next section trimmed off (it's
+// not meaningful content — replaceSection restores exactly one).
+func sectionText(body string, secs []mdSection, idx int) string {
+	lines := strings.Split(body, "\n")
+	return strings.Join(trimBlankLines(lines[secs[idx].Start:secs[idx].End]), "\n")
+}
+
+// replaceSection splices replacement in place of secs[idx] within body,
+// leaving everything else untouched. A blank line is always inserted
+// between the replacement and whatever section follows, regardless of
+// trailing whitespace in replacement — otherwise a replacement that doesn't
+// end in a blank line gets glued directly onto the next heading, breaking
+// it (e.g. "new content\n# b" instead of "new content\n\n# b").
+func replaceSection(body string, secs []mdSection, idx int, replacement string) string {
+	lines := strings.Split(body, "\n")
+	rest := lines[secs[idx].End:]
+
+	var out []string
+	out = append(out, lines[:secs[idx].Start]...)
+	out = append(out, trimBlankLines(strings.Split(replacement, "\n"))...)
+	if len(rest) > 0 {
+		out = append(out, "")
+	}
+	out = append(out, rest...)
+	return strings.Join(out, "\n")
+}
+
+var closeHeadingTag = regexp.MustCompile(`</h[1-6]>`)
+
+// addSectionEditLinks inserts a small "edit" link at the end of each
+// rendered heading, pointing at /edit/<slug>?section=<n>. n is a running
+// count over headings in document order, matching splitSections' indexing.
+func addSectionEditLinks(renderedHTML, slug string) string {
+	n := -1
+	return closeHeadingTag.ReplaceAllStringFunc(renderedHTML, func(closeTag string) string {
+		n++
+		return fmt.Sprintf(` <a class="section-edit" href="/edit/%s?section=%d">edit</a>%s`, slug, n, closeTag)
+	})
 }
 
 var (
