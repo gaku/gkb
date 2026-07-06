@@ -458,21 +458,23 @@ var listTmpl = template.Must(template.New("list").Parse(`<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gkb</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 15px; color: #222; background: #f9f9f7; }
 .wrap { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
 h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 1.5rem; color: #111; }
-form { display: flex; gap: 8px; margin-bottom: 1.5rem; }
+form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 1.5rem; }
 input[type=text] { flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; background: #fff; }
 button { padding: 6px 14px; border: 1px solid #ddd; border-radius: 6px; background: #fff; font-size: 14px; cursor: pointer; }
 button:hover { background: #f0f0ee; }
 .btn { padding: 6px 14px; border: 1px solid #ddd; border-radius: 6px; background: #fff; font-size: 14px; text-decoration: none; color: #222; display: inline-flex; align-items: center; }
 .btn:hover { background: #f0f0ee; color: #222; }
 ul { list-style: none; }
-li { border-bottom: 1px solid #eee; padding: 10px 0; display: flex; align-items: baseline; gap: 12px; }
+li { border-bottom: 1px solid #eee; padding: 10px 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
 li:last-child { border-bottom: none; }
+li > a { flex-shrink: 0; max-width: 100%; }
 a { color: #1a1a1a; text-decoration: none; font-weight: 500; }
 a:hover { color: #0066cc; }
 .meta { font-size: 13px; color: #888; }
@@ -514,6 +516,7 @@ var entryTmpl = template.Must(template.New("entry").Parse(`<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} — gkb</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -620,6 +623,7 @@ var editTmpl = template.Must(template.New("edit").Parse(`<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{if .IsNew}}new entry{{else}}editing {{.Title}}{{end}} — gkb</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -650,6 +654,9 @@ button:hover { background: #0055aa; }
 .attachments code { flex: 1; overflow-wrap: anywhere; padding: 5px 7px; border-radius: 4px; background: #efefed; font-size: 12px; }
 .copy { padding: 4px 9px; border-color: #ccc; background: #fff; color: #333; font-size: 12px; }
 .copy:hover { background: #f0f0ee; }
+.editor-toolbar { margin-bottom: 6px; }
+.toolbar-btn { padding: 4px 9px; border-color: #ccc; background: #fff; color: #333; font-size: 12px; }
+.toolbar-btn:hover { background: #f0f0ee; }
 </style>
 </head>
 <body>
@@ -679,7 +686,11 @@ button:hover { background: #0055aa; }
   </div>
   <div class="field">
     <label>body (markdown)</label>
+    <div class="editor-toolbar">
+      <button type="button" class="toolbar-btn" id="insert-table">+ table</button>
+    </div>
     <textarea name="body" spellcheck="false">{{.Body}}</textarea>
+    <p class="hint">in a table: Tab/Shift+Tab moves between cells, Enter on the last cell adds a row</p>
     {{if .Section}}<p class="hint">only this section will be saved — the rest of the page is untouched</p>{{end}}
   </div>
   {{if not .IsNew}}
@@ -701,6 +712,107 @@ button:hover { background: #0055aa; }
   </div>
 </form>
 </div>
+<script>
+(function() {
+  const bodyField = document.querySelector('textarea[name=body]');
+
+  function rowCells(line) {
+    let t = line.trim();
+    if (t.charAt(0) === '|') t = t.slice(1);
+    if (t.charAt(t.length - 1) === '|') t = t.slice(0, -1);
+    return t.split('|');
+  }
+
+  function isSeparatorRow(line) {
+    const cells = rowCells(line);
+    return cells.length > 0 && cells.every(c => /^\s*:?-+:?\s*$/.test(c));
+  }
+
+  function isTableRow(line) {
+    const t = line.trim();
+    return t.length >= 2 && t.charAt(0) === '|' && t.charAt(t.length - 1) === '|' && !isSeparatorRow(line);
+  }
+
+  function emptyRow(cols) {
+    return '|' + new Array(cols).fill('  ').join('|') + '|';
+  }
+
+  function pipePositions(line) {
+    const positions = [];
+    for (let i = 0; i < line.length; i++) if (line.charAt(i) === '|') positions.push(i);
+    return positions;
+  }
+
+  function currentLine(pos) {
+    const value = bodyField.value;
+    const start = value.lastIndexOf('\n', pos - 1) + 1;
+    const stop = value.indexOf('\n', pos);
+    return { text: value.slice(start, stop === -1 ? value.length : stop), start };
+  }
+
+  function insertTable() {
+    const colsInput = prompt('Number of columns?', '3');
+    if (colsInput === null) return;
+    const cols = Math.max(1, parseInt(colsInput, 10) || 3);
+    const rowsInput = prompt('Number of data rows (not counting the header)?', '2');
+    if (rowsInput === null) return;
+    const rows = Math.max(1, parseInt(rowsInput, 10) || 2);
+
+    const header = [];
+    const sep = [];
+    for (let i = 0; i < cols; i++) {
+      header.push(' Header ' + (i + 1) + ' ');
+      sep.push(' --- ');
+    }
+    const lines = ['|' + header.join('|') + '|', '|' + sep.join('|') + '|'];
+    for (let r = 0; r < rows; r++) lines.push(emptyRow(cols));
+    const table = lines.join('\n') + '\n';
+
+    const start = bodyField.selectionStart;
+    const before = bodyField.value.slice(0, start);
+    const needsLeadingNewline = before.length > 0 && before.charAt(before.length - 1) !== '\n';
+    bodyField.setRangeText((needsLeadingNewline ? '\n' : '') + table, start, bodyField.selectionEnd, 'end');
+    bodyField.focus();
+  }
+
+  const insertTableBtn = document.getElementById('insert-table');
+  if (insertTableBtn) insertTableBtn.addEventListener('click', insertTable);
+
+  bodyField.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== 'Tab') return;
+    const pos = bodyField.selectionStart;
+    const line = currentLine(pos);
+    if (!isTableRow(line.text)) return;
+
+    if (e.key === 'Enter') {
+      if (pos !== line.start + line.text.length) return; // only at end of the row
+      e.preventDefault();
+      const cols = rowCells(line.text).length;
+      const newRow = '\n' + emptyRow(cols);
+      bodyField.setRangeText(newRow, pos, pos, 'end');
+      bodyField.setSelectionRange(pos + 2, pos + 4); // select the new first cell's placeholder
+      return;
+    }
+
+    // Tab: move between cells of this row, wrapping at either end.
+    e.preventDefault();
+    const positions = pipePositions(line.text);
+    let cell = 0;
+    for (let i = 0; i < positions.length - 1; i++) {
+      // Strict ">" so a caret sitting exactly on a pipe (e.g. right after
+      // typing replacement text that fills a cell) still counts as that
+      // pipe's left-hand cell, not the one after it.
+      if (pos - line.start > positions[i]) cell = i;
+    }
+    cell += e.shiftKey ? -1 : 1;
+    const count = positions.length - 1;
+    cell = (cell + count) % count;
+    const cellStart = line.start + positions[cell] + 1;
+    const cellEnd = line.start + positions[cell + 1];
+    bodyField.setSelectionRange(cellStart, cellEnd);
+  });
+})();
+</script>
 {{if not .IsNew}}
 <script>
 const zone = document.getElementById('dropzone');
