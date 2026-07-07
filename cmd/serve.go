@@ -882,6 +882,24 @@ bodyField.addEventListener('paste', async e => {
     break;
   }
 });
+
+// Dropping a file directly on the textarea otherwise falls through to the
+// browser's default handling (navigating to the file) instead of the
+// dropzone's upload flow. Only intercept drags that actually carry a file,
+// so ordinary text drag-and-drop into the textarea keeps working.
+for (const event of ['dragenter', 'dragover']) {
+  bodyField.addEventListener(event, e => {
+    if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+  });
+}
+bodyField.addEventListener('drop', async e => {
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  e.preventDefault();
+  const attachment = await uploadImage(file);
+  if (attachment) bodyField.setRangeText(attachment.markup, bodyField.selectionStart, bodyField.selectionEnd, 'end');
+});
+
 list.addEventListener('click', async e => {
   if (!e.target.classList.contains('copy')) return;
   const markup = e.target.previousElementSibling.textContent;
