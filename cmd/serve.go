@@ -538,8 +538,8 @@ h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
 .body ul,.body ol { margin: 0 0 1rem 1.5rem; }
 .body li { margin-bottom: 0.25rem; }
 .body code { font-family: monospace; font-size: 13px; background: #efefed; padding: 1px 5px; border-radius: 3px; }
-.body pre { background: #efefed; padding: 1rem; border-radius: 6px; overflow-x: auto; margin-bottom: 1rem; }
-.body pre code { background: none; padding: 0; }
+.body pre { background: #efefed; padding: 1rem; border-radius: 6px; overflow-x: auto; margin-bottom: 1rem; line-height: 1.2; }
+.body pre code { background: none; padding: 0; font-size: 12px; }
 .body a { color: #0066cc; }
 .body img { max-width: 100%; height: auto; }
 .body .math.display { display: block; overflow-x: auto; margin: 1rem 0; }
