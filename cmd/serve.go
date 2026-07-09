@@ -543,6 +543,8 @@ h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
 .body a { color: #0066cc; }
 .body img { max-width: 100%; height: auto; }
 .body .math.display { display: block; overflow-x: auto; margin: 1rem 0; }
+.body blockquote { border-left: 3px solid #ddd; margin: 0 0 1rem; padding: 0.1rem 1rem; color: #666; }
+.body blockquote p:last-child { margin-bottom: 0; }
 .body table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
 .body th, .body td { text-align: left; padding: 10px 20px 10px 0; vertical-align: top; }
 .body th { font-weight: 600; color: #111; border-bottom: 2px solid #ddd; }
