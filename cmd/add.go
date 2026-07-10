@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/gaku/gkb/internal/kb"
@@ -39,28 +37,14 @@ var addCmd = &cobra.Command{
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "created %s\n", e.Slug)
-
-		if isInteractive() {
-			return openEditor(filepath.Join(kbDir, e.Slug+".md"))
-		}
 		return nil
 	},
 }
 
-// terminalStdin/terminalStdout are vars, not direct isTerminal(os.Stdin)
-// calls, so tests can fake a non-terminal stdin/stdout — cmd.SetIn doesn't
-// change what the real os.Stdin file descriptor looks like to Stat.
-var (
-	terminalStdin  = func() bool { return isTerminal(os.Stdin) }
-	terminalStdout = func() bool { return isTerminal(os.Stdout) }
-)
-
-func isInteractive() bool {
-	// Only launch an editor when both input and output are attached to a
-	// terminal. If either is redirected (piped, captured, etc.), an
-	// interactive editor like vim cannot run and would fail.
-	return terminalStdin() && terminalStdout()
-}
+// terminalStdin is a var, not a direct isTerminal(os.Stdin) call, so tests
+// can fake a non-terminal stdin — cmd.SetIn doesn't change what the real
+// os.Stdin file descriptor looks like to Stat.
+var terminalStdin = func() bool { return isTerminal(os.Stdin) }
 
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
@@ -68,18 +52,6 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 	return (fi.Mode() & os.ModeCharDevice) != 0
-}
-
-func openEditor(path string) error {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
-	}
-	c := exec.Command(editor, path)
-	c.Stdin = os.Stdin
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return c.Run()
 }
 
 func init() {

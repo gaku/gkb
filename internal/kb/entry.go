@@ -75,8 +75,8 @@ func Exists(kbDir, slug string) bool {
 }
 
 // Save writes an entry (frontmatter + body) to disk, overwriting any existing
-// file for its slug. Used by the web editor in `gkb serve`; the CLI edits the
-// raw file via $EDITOR instead.
+// file for its slug. Used by the web editor in `gkb serve`; the CLI overwrites
+// the raw file directly instead (see WriteRaw).
 func Save(kbDir string, e *Entry) error {
 	if e.Slug == "" {
 		return fmt.Errorf("entry has no slug")
@@ -225,7 +225,7 @@ func (e *Entry) hasTag(tag string) bool {
 // Marshal serializes the entry to its on-disk form: YAML-ish frontmatter
 // followed by the markdown body. An empty body yields just the frontmatter
 // (matching the original `add` behavior, where the body was filled in later via
-// $EDITOR).
+// `gkb edit`).
 func (e *Entry) Marshal() string {
 	tags := ""
 	if len(e.Tags) > 0 {

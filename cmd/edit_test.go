@@ -41,6 +41,25 @@ func TestEditCommandOverwritesFromStdinWhenRedirected(t *testing.T) {
 	}
 }
 
+func TestEditCommandRejectsTerminalStdin(t *testing.T) {
+	dir := t.TempDir()
+	if err := kb.Save(dir, &kb.Entry{Slug: "my-page", Title: "My Page", Date: time.Now(), Body: "old body"}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCfg := cfg
+	cfg = &config.Config{KbDir: dir}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	oldStdin := terminalStdin
+	terminalStdin = func() bool { return true }
+	t.Cleanup(func() { terminalStdin = oldStdin })
+
+	if err := editCmd.RunE(editCmd, []string{"my-page"}); err == nil {
+		t.Fatal("expected an error when stdin is a terminal")
+	}
+}
+
 func TestEditCommandRejectsStdinForMissingEntry(t *testing.T) {
 	dir := t.TempDir()
 	oldCfg := cfg

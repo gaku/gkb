@@ -29,18 +29,26 @@ gkb init ~/self/kb
 
 This sets `kb_dir` in `~/.gkb` (TOML format). The content directory is created automatically on first `add`.
 
+### Claude Code/OpenCode skill
+
+If you use [Claude Code](https://claude.com/claude-code), run `make install-skill`
+to copy `skills/gkb/SKILL.md` into `~/.claude/skills/gkb/SKILL.md` so agents know
+to drive `gkb` through the CLI instead of editing entry files directly.
+
+It also installs OpenCode SKILL as well.
+
 ## Usage
 
 ```
 gkb add <title> [-t tag1,tag2]   create a new entry (reads body from stdin if redirected)
 gkb show <slug>                   print an entry's raw Markdown file
-gkb edit <slug>                   open entry in $EDITOR (overwrites from stdin if redirected)
+gkb edit <slug>                   overwrite an entry's raw Markdown file from stdin
 gkb attach <slug> <image-file|->  attach an image (or - for stdin) and print its Markdown
 gkb delete <slug>                 remove an entry
 gkb list                          list all entries
 gkb search <query>                full-text search
 gkb search --tag <tag>            filter by tag
-gkb status                        show kb_dir and entry count
+gkb status                        show entry count
 gkb serve [-p port] [-b bind]     browse & edit over the web
 ```
 

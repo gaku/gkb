@@ -29,12 +29,13 @@ when the title isn't. A title that's already ASCII derives one
 automatically; for a non-ASCII title (e.g. Japanese), pass -s/--slug
 explicitly (gkb add, or the slug field in the web editor).
 
-"gkb show" prints that file exactly as stored -- frontmatter included, no
-rendering or reformatting. "gkb edit" is its write-side counterpart: given
-redirected stdin, it overwrites the file verbatim instead of opening
-$EDITOR. That symmetry is the pattern AI agents (and scripts) should use to
-read and update an entry -- see the examples below. "gkb add" supports the
-same trick for the initial body on create.`,
+AI agents and scripts: always go through this CLI rather than reading or
+writing entry files directly on disk with a general-purpose file tool.
+"gkb show" prints a file exactly as stored -- frontmatter included, no
+rendering or reformatting. "gkb edit" is its write-side counterpart: it
+reads stdin and overwrites the file verbatim. That symmetry is the pattern
+to use to read and update an entry -- see the examples below. "gkb add"
+supports the same trick for the initial body on create.`,
 	Example: `  gkb show <slug> | some-transform | gkb edit <slug>
   gkb add "New Page" -t tag1,tag2 < notes.md`,
 }

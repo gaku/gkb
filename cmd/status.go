@@ -17,7 +17,6 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("kb_dir: %s\n", kbDir)
 		fmt.Printf("entries: %d\n", len(entries))
 		warnDuplicateTitles(entries)
 		return nil
