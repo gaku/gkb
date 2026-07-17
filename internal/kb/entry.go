@@ -14,6 +14,10 @@ type Entry struct {
 	Slug    string
 	Title   string
 	Tags    []string
+	// Aliases are alternate names a [[wikilink]] can use to resolve to this
+	// entry, in addition to its Slug and Title. See
+	// decisions/005-wikilink-aliases.md.
+	Aliases []string
 	Date    time.Time
 	Body    string
 	ModTime time.Time
@@ -231,8 +235,12 @@ func (e *Entry) Marshal() string {
 	if len(e.Tags) > 0 {
 		tags = "tags: " + strings.Join(e.Tags, ", ") + "\n"
 	}
-	fm := fmt.Sprintf("---\ntitle: %s\ndate: %s\n%s---\n\n",
-		e.Title, e.Date.Format("2006-01-02"), tags)
+	aliases := ""
+	if len(e.Aliases) > 0 {
+		aliases = "aliases: " + strings.Join(e.Aliases, ", ") + "\n"
+	}
+	fm := fmt.Sprintf("---\ntitle: %s\ndate: %s\n%s%s---\n\n",
+		e.Title, e.Date.Format("2006-01-02"), tags, aliases)
 	body := strings.TrimSpace(e.Body)
 	if body == "" {
 		return fm
@@ -262,6 +270,13 @@ func parse(slug, content string) (*Entry, error) {
 			raw := strings.TrimSpace(strings.TrimPrefix(line, "tags:"))
 			for _, t := range strings.Split(raw, ",") {
 				e.Tags = append(e.Tags, strings.TrimSpace(t))
+			}
+		} else if strings.HasPrefix(line, "aliases:") {
+			raw := strings.TrimSpace(strings.TrimPrefix(line, "aliases:"))
+			for _, a := range strings.Split(raw, ",") {
+				if a = strings.TrimSpace(a); a != "" {
+					e.Aliases = append(e.Aliases, a)
+				}
 			}
 		}
 	}

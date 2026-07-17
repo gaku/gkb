@@ -62,11 +62,7 @@ scan, just with extra machinery in between.
 
 ## Future plan (not yet decided)
 
-- **Surviving a title rename** (not just a slug rename): if `[[old-title]]`
-  references need to keep resolving after retitling a page, add an optional
-  `aliases:` frontmatter field (comma-separated former titles), parsed
-  alongside `tags:`/`title:`. Keeps the single `.md` file as the sole source
-  of truth instead of a separate table.
+- ~~**Surviving a title rename**~~ — done, see [[005-wikilink-aliases.md]].
 - **Scaling the per-render scan**: if a full-KB scan on every entry render
   ever becomes a real bottleneck, cache the title index in memory for the
   lifetime of the `gkb serve` process, invalidated by a periodic re-scan or

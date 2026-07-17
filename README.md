@@ -88,6 +88,13 @@ Caddy works the same way for a public domain (`reverse_proxy 127.0.0.1:8086`).
 Always bind `127.0.0.1` behind a proxy so the plaintext port isn't reachable on
 the LAN.
 
+Since gkb only knows its local bind address, set `serve_url` in `~/.gkb` to the
+externally reachable address (Tailscale/Caddy) so `gkb status` can print it:
+
+```toml
+serve_url = "https://kb.your-tailnet.ts.net"
+```
+
 ### Examples
 
 ```bash
@@ -112,10 +119,17 @@ Each entry is a markdown file with YAML frontmatter stored in `kb_dir`:
 title: auth strategy
 date: 2026-07-01
 tags: auth, infra
+aliases: authn strategy, 認証戦略
 ---
 
 Entry body goes here.
 ```
+
+`aliases` is optional, comma-separated. A `[[wikilink]]` resolves against an
+entry's slug or title as usual, and also against its aliases — useful for
+non-English titles that mix in a romanization or parenthetical (e.g. title
+`インドゥティオマルス（Indutiomarus）` with alias `インドゥティオマルス`, so
+`[[インドゥティオマルス]]` resolves without repeating the full title).
 
 ## Config
 
@@ -123,6 +137,7 @@ Entry body goes here.
 
 ```toml
 kb_dir     = "~/self/kb"
-serve_user = "gaku"          # optional — enables Basic Auth for `gkb serve`
-serve_pass = "your-password" # optional
+serve_user = "gaku"                          # optional — enables Basic Auth for `gkb serve`
+serve_pass = "your-password"                 # optional
+serve_url  = "https://kb.your-tailnet.ts.net" # optional — shown by `gkb status`
 ```

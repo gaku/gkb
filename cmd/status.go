@@ -18,6 +18,9 @@ var statusCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("entries: %d\n", len(entries))
+		if cfg.ServeURL != "" {
+			fmt.Printf("serving at: %s\n", cfg.ServeURL)
+		}
 		warnDuplicateTitles(entries)
 		return nil
 	},

@@ -274,7 +274,8 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 	slug := strings.TrimSpace(r.FormValue("slug"))
 	title := strings.TrimSpace(r.FormValue("title"))
 	body := r.FormValue("body")
-	tags := parseTags(r.FormValue("tags"))
+	tags := parseCommaList(r.FormValue("tags"))
+	aliases := parseCommaList(r.FormValue("aliases"))
 	section := strings.TrimSpace(r.FormValue("section"))
 
 	// renderErr re-renders the form being submitted, preserving section
@@ -292,7 +293,7 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 			}
 		}
 		renderEditView(w, editView{
-			IsNew: isNew, Slug: slug, Title: title, Tags: tags, Body: body,
+			IsNew: isNew, Slug: slug, Title: title, Tags: tags, Aliases: aliases, Body: body,
 			Err: errMsg, Section: section, SectionHeading: sectionHeading,
 			Attachments: kb.ListAttachments(kbDir, slug),
 		})
@@ -321,7 +322,7 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 			renderErr(fmt.Sprintf("entry %q already exists", newSlug))
 			return
 		}
-		e = &kb.Entry{Slug: newSlug, Title: title, Tags: tags, Date: time.Now(), Body: body}
+		e = &kb.Entry{Slug: newSlug, Title: title, Tags: tags, Aliases: aliases, Date: time.Now(), Body: body}
 	} else {
 		// Existing entry — preserve its original date.
 		existing, err := kb.Load(kbDir, slug)
@@ -342,6 +343,7 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 		}
 		existing.Title = title
 		existing.Tags = tags
+		existing.Aliases = aliases
 		e = existing
 	}
 
@@ -397,15 +399,16 @@ func handleUpload(w http.ResponseWriter, r *http.Request, kbDir string) {
 	json.NewEncoder(w).Encode(a)
 }
 
-// parseTags splits a comma-separated tag string into trimmed, non-empty tags.
-func parseTags(raw string) []string {
-	var tags []string
+// parseCommaList splits a comma-separated form field (tags, aliases) into
+// trimmed, non-empty items.
+func parseCommaList(raw string) []string {
+	var items []string
 	for _, t := range strings.Split(raw, ",") {
 		if t = strings.TrimSpace(t); t != "" {
-			tags = append(tags, t)
+			items = append(items, t)
 		}
 	}
-	return tags
+	return items
 }
 
 func printListenAddrs() {
@@ -687,6 +690,11 @@ button:hover { background: #0055aa; }
     <input type="text" name="tags" value="{{.TagStr}}">
   </div>
   <div class="field">
+    <label>aliases (comma-separated)</label>
+    <input type="text" name="aliases" value="{{.AliasStr}}">
+    <p class="hint">alternate names a [[wikilink]] can use to reach this page</p>
+  </div>
+  <div class="field">
     <label>body (markdown)</label>
     <div class="editor-toolbar">
       <button type="button" class="toolbar-btn" id="insert-table">+ table</button>
@@ -937,6 +945,7 @@ type editView struct {
 	Slug           string
 	Title          string
 	Tags           []string
+	Aliases        []string
 	Body           string
 	Err            string
 	Section        string // "" for a full-page edit, else the section index
@@ -951,6 +960,7 @@ func renderEditView(w http.ResponseWriter, v editView) {
 		"Slug":           v.Slug,
 		"Title":          v.Title,
 		"TagStr":         strings.Join(v.Tags, ", "),
+		"AliasStr":       strings.Join(v.Aliases, ", "),
 		"Body":           v.Body,
 		"Err":            v.Err,
 		"Section":        v.Section,
@@ -965,6 +975,7 @@ func renderEdit(w http.ResponseWriter, e *kb.Entry, isNew bool, errMsg, kbDir st
 		Slug:        e.Slug,
 		Title:       e.Title,
 		Tags:        e.Tags,
+		Aliases:     e.Aliases,
 		Body:        e.Body,
 		Err:         errMsg,
 		Attachments: kb.ListAttachments(kbDir, e.Slug),
@@ -979,6 +990,7 @@ func renderEditSection(w http.ResponseWriter, e *kb.Entry, secs []mdSection, idx
 		Slug:           e.Slug,
 		Title:          e.Title,
 		Tags:           e.Tags,
+		Aliases:        e.Aliases,
 		Body:           sectionText(e.Body, secs, idx),
 		Err:            errMsg,
 		Section:        strconv.Itoa(idx),
@@ -1034,29 +1046,41 @@ func renderLogin(w http.ResponseWriter, next, errMsg string) {
 	loginTmpl.Execute(w, map[string]any{"Next": next, "Err": errMsg})
 }
 
-var wikiLink = regexp.MustCompile(`\[\[([^\]|]+)(?:\|([^\]]+))?\]\]`)
+// The \\? before the pipe tolerates a stray backslash-escaped pipe
+// ([[slug\|text]]), which agents sometimes write out of habit even though
+// the pipe needs no escaping here.
+var wikiLink = regexp.MustCompile(`\[\[([^\]|\\]+)\\?(?:\|([^\]]+))?\]\]`)
 
 // wikiLinkIndex resolves a [[target]] to the slug it refers to: target is
 // tried as a slug first (existing behavior, unchanged); if that doesn't
 // match any entry, it's tried against every entry's Title instead, so a
 // non-ASCII-titled page (slugs are kept ASCII by design) can be linked by
 // its title directly — e.g. [[ローマ]] — without knowing or repeating its
-// slug. See decisions/004-wikilinks-by-title.md.
+// slug. See decisions/004-wikilinks-by-title.md. Finally it's tried against
+// each entry's Aliases, so a page can keep resolving under a former title or
+// a shorter alternate name. See decisions/005-wikilink-aliases.md.
 type wikiLinkIndex struct {
-	slugs  map[string]bool
-	titles map[string]string
+	slugs   map[string]bool
+	titles  map[string]string
+	aliases map[string]string
 }
 
 func buildWikiLinkIndex(entries []*kb.Entry) *wikiLinkIndex {
 	idx := &wikiLinkIndex{
-		slugs:  make(map[string]bool, len(entries)),
-		titles: make(map[string]string, len(entries)),
+		slugs:   make(map[string]bool, len(entries)),
+		titles:  make(map[string]string, len(entries)),
+		aliases: make(map[string]string, len(entries)),
 	}
 	for _, e := range entries {
 		idx.slugs[e.Slug] = true
 		if e.Title != "" {
 			if _, exists := idx.titles[e.Title]; !exists {
 				idx.titles[e.Title] = e.Slug
+			}
+		}
+		for _, a := range e.Aliases {
+			if _, exists := idx.aliases[a]; !exists {
+				idx.aliases[a] = e.Slug
 			}
 		}
 	}
@@ -1070,6 +1094,9 @@ func (idx *wikiLinkIndex) resolve(target string) string {
 		return target
 	}
 	if slug, ok := idx.titles[target]; ok {
+		return slug
+	}
+	if slug, ok := idx.aliases[target]; ok {
 		return slug
 	}
 	return target

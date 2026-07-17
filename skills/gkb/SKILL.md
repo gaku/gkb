@@ -19,7 +19,7 @@ tags: tag1, tag2
 <body markdown>
 ```
 
-**Always use the `gkb` subcommands below — never read or write entry files
+**Always use the `gkb` subcommands below — NEVER read or write entry files
 directly with a general-purpose file tool (Read/Edit/Write/cat/etc.), even
 though you technically have filesystem access.** Going through the CLI keeps
 frontmatter well-formed and slugs consistent, and it's what `gkb --help`
@@ -40,7 +40,7 @@ Slug is auto-derived from the title by lowercasing and hyphenating; pass
 `--slug` for non-ASCII titles.
 
 To seed the body at creation time, pipe it in on stdin — this is the normal,
-agent-safe way to use `add`, no `$EDITOR` is ever launched:
+agent-safe way to use `add`:
 
 ```bash
 gkb add "<title>" --tag foo --tag bar <<'EOF'
@@ -53,6 +53,14 @@ up with `gkb edit <slug>` (see below) to fill it in.
 
 Before creating, run `gkb search "<key terms>"` (or `gkb list`) to check whether a
 relevant entry already exists — prefer updating it over creating a near-duplicate.
+
+## Linking
+
+You can link pages using double brackets: `[[title]]`. When the content is non-English, it might be better to use page title instead of slug.
+
+To show different display text, use `[[slug|display text]]` — slug first, then a
+literal pipe, then the text. Do **not** escape the pipe (`\|`); a plain `|` is
+correct as-is.
 
 ## Updating an existing entry
 
@@ -68,6 +76,16 @@ Or reconstruct the whole file yourself (frontmatter + body) and pipe it in
 with a heredoc. Either way, preserve the existing frontmatter (title/date/tags)
 unless the change specifically calls for updating it, then run `gkb show <slug>`
 again to verify.
+
+## Serving and URL
+
+`gkb serve` starts a local web UI to browse/search/edit entries — only run it
+if the owner explicitly asks. If he's set `serve_url` in `~/.gkb` (the externally
+reachable Tailscale/Caddy address, since gkb only knows its local bind
+address), `gkb status` prints it as `serving at: <url>` — use that to hand
+the owner a link instead of guessing one.
+
+It is good habit to share the serving URL when you create/modify entries.
 
 ## Other mutations
 

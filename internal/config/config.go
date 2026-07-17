@@ -16,6 +16,10 @@ type Config struct {
 	// proxy->gkb hop.
 	ServeUser string `toml:"serve_user"`
 	ServePass string `toml:"serve_pass"`
+	// ServeURL is the externally reachable base URL for `gkb serve` (e.g. a
+	// Tailscale or Caddy address), since gkb itself only knows its local bind
+	// address. Purely informational -- printed by `gkb status`.
+	ServeURL string `toml:"serve_url"`
 }
 
 func configPath() string {

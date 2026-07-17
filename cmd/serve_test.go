@@ -114,6 +114,33 @@ func TestExpandWikiLinksSlugPipeTextStillWorks(t *testing.T) {
 	}
 }
 
+func TestExpandWikiLinksToleratesEscapedPipe(t *testing.T) {
+	entries := []*kb.Entry{{Slug: "rome", Title: "ローマ"}}
+	html := expandWikiLinks(`[[rome\|ローマの休日のロケ地]]`, entries)
+	if html != "[ローマの休日のロケ地](/entry/rome)" {
+		t.Fatalf("got %q", html)
+	}
+}
+
+func TestExpandWikiLinksResolvesByAlias(t *testing.T) {
+	entries := []*kb.Entry{{Slug: "indutiomarus", Title: "インドゥティオマルス（Indutiomarus）", Aliases: []string{"インドゥティオマルス", "Indutiomarus"}}}
+	html := expandWikiLinks("[[インドゥティオマルス]]", entries)
+	if html != "[インドゥティオマルス](/entry/indutiomarus)" {
+		t.Fatalf("got %q", html)
+	}
+}
+
+func TestExpandWikiLinksTitleTakesPrecedenceOverAlias(t *testing.T) {
+	entries := []*kb.Entry{
+		{Slug: "rome", Title: "ローマ"},
+		{Slug: "roman-empire", Title: "Roman Empire", Aliases: []string{"ローマ"}},
+	}
+	html := expandWikiLinks("[[ローマ]]", entries)
+	if html != "[ローマ](/entry/rome)" {
+		t.Fatalf("got %q", html)
+	}
+}
+
 func TestExpandWikiLinksUnknownTargetFallsBackToLiteralSlug(t *testing.T) {
 	html := expandWikiLinks("[[not-yet-created]]", nil)
 	if html != "[not-yet-created](/entry/not-yet-created)" {
@@ -188,6 +215,22 @@ func TestHandleSaveCreatesEntryWithExplicitSlug(t *testing.T) {
 	}
 	if e.Title != "ローマ" {
 		t.Fatalf("title = %q", e.Title)
+	}
+}
+
+func TestHandleSaveWritesAliases(t *testing.T) {
+	dir := t.TempDir()
+	recorder := httptest.NewRecorder()
+	form := url.Values{"mode": {"new"}, "slug": {"indutiomarus"}, "title": {"インドゥティオマルス（Indutiomarus）"}, "aliases": {"インドゥティオマルス, Indutiomarus"}, "body": {""}}
+	handleSave(recorder, saveRequest(t, form), dir)
+
+	e, err := kb.Load(dir, "indutiomarus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"インドゥティオマルス", "Indutiomarus"}
+	if len(e.Aliases) != len(want) || e.Aliases[0] != want[0] || e.Aliases[1] != want[1] {
+		t.Fatalf("got Aliases %q, want %q", e.Aliases, want)
 	}
 }
 
