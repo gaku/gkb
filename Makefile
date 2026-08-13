@@ -4,7 +4,10 @@ INSTALL_DIR = $(HOME)/bin
 build:
 	go build -o $(BINARY) .
 
-install: build
+static-build:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BINARY) .
+
+install: static-build
 	install -d $(INSTALL_DIR)
 	install -m 755 $(BINARY) $(INSTALL_DIR)/$(BINARY)
 
@@ -13,6 +16,9 @@ install-skill:
 	install -m 644 skills/gkb/SKILL.md $(HOME)/.claude/skills/gkb/SKILL.md
 	install -d $(HOME)/.config/opencode/skills/gkb
 	install -m 644 skills/gkb/SKILL.md $(HOME)/.config/opencode/skills/gkb/SKILL.md
+
+install-systemd:
+	cp gkb-serve.service $(HOME)/.config/systemd/user/
 
 start:
 	systemctl --user start gkb-serve
