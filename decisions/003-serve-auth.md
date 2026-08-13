@@ -21,10 +21,10 @@ certificate.
 
 **`gkb` owns authentication** via a whole-site form login backed by a signed
 session cookie, so editing is gated regardless of what the proxy does.
-Credentials live in `~/.gkb`:
+Credentials live in `~/.gkb-serve` (mode `0600`), separate from the agent-readable
+`~/.gkb`:
 
 ```toml
-kb_dir     = "~/self/kb"
 serve_user = "gaku"
 serve_pass = "..."
 ```
@@ -88,7 +88,7 @@ gkb serve --bind 127.0.0.1        # then: tailscale serve https / http://127.0.0
 - **Cookie `Secure` flag** — omitted so plain-HTTP localhost testing works. Behind
   a TLS proxy the browser↔proxy hop is encrypted anyway; set it if the server is
   ever reached over HTTP on an untrusted network.
-- **Password storage** — plaintext in `~/.gkb`. A bcrypt hash would be stronger
+- **Password storage** — plaintext in `~/.gkb-serve`. A bcrypt hash would be stronger
   but adds a hashing/setup step; deferred as over-engineering for a personal KB.
 - **Proxy-provided identity** — Tailscale can pass `Tailscale-User-Login`
   headers; we could trust those instead of Basic Auth, but that couples auth to

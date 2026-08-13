@@ -12,12 +12,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gaku/gkb/internal/config"
 	"github.com/gaku/gkb/internal/kb"
 	"github.com/gomarkdown/markdown"
 	"github.com/gomarkdown/markdown/html"
@@ -26,8 +28,10 @@ import (
 )
 
 var (
-	servePort int
-	serveBind string
+	servePort   int
+	serveBind   string
+	serveSecret string
+	serveCfg    *config.ServeConfig
 )
 
 var serveCmd = &cobra.Command{
@@ -35,6 +39,12 @@ var serveCmd = &cobra.Command{
 	Short: "Start a local web server to browse the knowledge base",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		kbDir := requireKbDir()
+
+		var err error
+		serveCfg, err = config.LoadServe(serveSecret)
+		if err != nil {
+			return err
+		}
 
 		if entries, err := kb.List(kbDir); err == nil {
 			warnDuplicateTitles(entries)
@@ -86,14 +96,14 @@ var serveCmd = &cobra.Command{
 			}
 			e, err := kb.Load(kbDir, slug)
 			if err != nil {
-				renderNewFromWikiLink(w, slug, kbDir)
+				renderNewFromWikiLink(w, slug)
 				return
 			}
 			renderEntry(w, e, kbDir)
 		})
 
 		mux.HandleFunc("/new", func(w http.ResponseWriter, r *http.Request) {
-			renderEdit(w, &kb.Entry{}, true, "", kbDir)
+			renderEdit(w, &kb.Entry{}, true, "")
 		})
 
 		mux.HandleFunc("/edit/", func(w http.ResponseWriter, r *http.Request) {
@@ -106,11 +116,11 @@ var serveCmd = &cobra.Command{
 			if raw := r.URL.Query().Get("section"); raw != "" {
 				secs := splitSections(e.Body)
 				if idx, err := strconv.Atoi(raw); err == nil && idx >= 0 && idx < len(secs) {
-					renderEditSection(w, e, secs, idx, "", kbDir)
+					renderEditSection(w, e, secs, idx, "")
 					return
 				}
 			}
-			renderEdit(w, e, false, "", kbDir)
+			renderEdit(w, e, false, "")
 		})
 
 		mux.HandleFunc("/upload/", func(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +155,7 @@ const sessionTTL = 30 * 24 * time.Hour
 // the credentials. /login and /logout are always reachable. If credentials are
 // unset, the server runs open (a warning is printed at startup).
 func withAuth(next http.Handler) http.Handler {
-	if cfg.ServeUser == "" || cfg.ServePass == "" {
+	if serveCfg.ServeUser == "" || serveCfg.ServePass == "" {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +170,7 @@ func withAuth(next http.Handler) http.Handler {
 // sessionKey is the HMAC key for signing session cookies. Deriving it from the
 // password keeps the server stateless (no key to persist) while invalidating all
 // sessions whenever the password changes.
-func sessionKey() []byte { return []byte("gkb-session-v1:" + cfg.ServePass) }
+func sessionKey() []byte { return []byte("gkb-session-v1:" + serveCfg.ServePass) }
 
 // issueSession signs an expiry timestamp and sets it as the session cookie. The
 // value is `<exp-unix>.<hex hmac>`, verified in validSession.
@@ -216,8 +226,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		u := r.FormValue("username")
 		p := r.FormValue("password")
-		userOK := subtle.ConstantTimeCompare([]byte(u), []byte(cfg.ServeUser)) == 1
-		passOK := subtle.ConstantTimeCompare([]byte(p), []byte(cfg.ServePass)) == 1
+		userOK := subtle.ConstantTimeCompare([]byte(u), []byte(serveCfg.ServeUser)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(p), []byte(serveCfg.ServePass)) == 1
 		if userOK && passOK {
 			issueSession(w)
 			http.Redirect(w, r, next, http.StatusSeeOther)
@@ -295,7 +305,6 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 		renderEditView(w, editView{
 			IsNew: isNew, Slug: slug, Title: title, Tags: tags, Aliases: aliases, Body: body,
 			Err: errMsg, Section: section, SectionHeading: sectionHeading,
-			Attachments: kb.ListAttachments(kbDir, slug),
 		})
 	}
 
@@ -412,8 +421,8 @@ func parseCommaList(raw string) []string {
 }
 
 func printListenAddrs() {
-	if cfg.ServeUser == "" || cfg.ServePass == "" {
-		fmt.Println("warning: serve_user/serve_pass not set in ~/.gkb — running WITHOUT authentication")
+	if serveCfg.ServeUser == "" || serveCfg.ServePass == "" {
+		fmt.Printf("warning: serve_user/serve_pass not set in %s; running WITHOUT authentication\n", serveSecret)
 	}
 
 	// When bound to a specific loopback/interface address, report just that.
@@ -454,6 +463,7 @@ func printListenAddrs() {
 func init() {
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 8086, "port to listen on")
 	serveCmd.Flags().StringVarP(&serveBind, "bind", "b", "0.0.0.0", "address to bind (use 127.0.0.1 behind a TLS reverse proxy)")
+	serveCmd.Flags().StringVar(&serveSecret, "secret", config.ServeConfigPath(), "path to serve credentials file")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -588,7 +598,7 @@ func renderList(w http.ResponseWriter, entries []*kb.Entry, query, tag string, t
 		"Entries":          entries,
 		"Query":            query,
 		"Tag":              tag,
-		"Authed":           cfg.ServeUser != "" && cfg.ServePass != "",
+		"Authed":           serveCfg != nil && serveCfg.ServeUser != "" && serveCfg.ServePass != "",
 		"TotalEntries":     totalEntries,
 		"TotalAttachments": totalAttachments,
 	})
@@ -601,14 +611,14 @@ func renderList(w http.ResponseWriter, entries []*kb.Entry, query, tag string, t
 // title-based convention — prefilled as Title, since slugs stay ASCII by
 // design and the user needs to supply one). See
 // decisions/004-wikilinks-by-title.md.
-func renderNewFromWikiLink(w http.ResponseWriter, raw, kbDir string) {
+func renderNewFromWikiLink(w http.ResponseWriter, raw string) {
 	e := &kb.Entry{}
 	if kb.ValidSlug(raw) {
 		e.Slug = raw
 	} else {
 		e.Title = raw
 	}
-	renderEdit(w, e, true, "", kbDir)
+	renderEdit(w, e, true, "")
 }
 
 func renderEntry(w http.ResponseWriter, e *kb.Entry, kbDir string) {
@@ -619,7 +629,7 @@ func renderEntry(w http.ResponseWriter, e *kb.Entry, kbDir string) {
 		"Date":      e.Date,
 		"Tags":      e.Tags,
 		"Slug":      e.Slug,
-		"HTML":      template.HTML(addSectionEditLinks(renderMarkdown(e.Body, entries), e.Slug)),
+		"HTML":      template.HTML(addSectionEditLinks(renderMarkdown(e.Body, entries, kbDir), e.Slug)),
 		"Backlinks": backlinks(entries, e.Slug),
 	})
 }
@@ -633,32 +643,25 @@ var editTmpl = template.Must(template.New("edit").Parse(`<!DOCTYPE html>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 15px; color: #222; background: #f9f9f7; }
-.wrap { max-width: 720px; margin: 0 auto; padding: 2rem 1.5rem; }
-.nav { font-size: 13px; margin-bottom: 1.5rem; }
+.wrap { max-width: 720px; margin: 0 auto; padding: 1.5rem; }
+.nav { font-size: 13px; margin-bottom: 1rem; }
 .nav a { color: #0066cc; text-decoration: none; }
 .nav a:hover { text-decoration: underline; }
-h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 1.5rem; }
-label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
-.field { margin-bottom: 1.25rem; }
-input[type=text], textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; background: #fff; font-family: inherit; }
-textarea { min-height: 22rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5; resize: vertical; }
-.actions { display: flex; gap: 8px; align-items: center; }
+h1 { font-size: 1.15rem; font-weight: 600; margin-bottom: 0.75rem; }
+label { display: block; font-size: 12px; color: #555; margin-bottom: 2px; }
+.field { margin-bottom: 0.6rem; }
+.row { display: flex; gap: 0.6rem; }
+.row .field { flex: 1; }
+.row .narrow { flex: 0 0 200px; }
+input[type=text], textarea { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; background: #fff; font-family: inherit; }
+textarea { min-height: 28rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5; resize: vertical; }
+.actions { display: flex; gap: 8px; align-items: center; margin-top: 0.75rem; }
 button { padding: 7px 16px; border: 1px solid #0066cc; border-radius: 6px; background: #0066cc; color: #fff; font-size: 14px; cursor: pointer; }
 button:hover { background: #0055aa; }
 .cancel { font-size: 14px; color: #888; text-decoration: none; }
 .cancel:hover { text-decoration: underline; }
 .err { color: #b00020; font-size: 14px; margin-bottom: 1rem; }
-.hint { font-size: 12px; color: #999; margin-top: 4px; }
-.dropzone { border: 2px dashed #ccc; border-radius: 6px; padding: 1.25rem; text-align: center; color: #777; cursor: pointer; background: #fff; }
-.dropzone.dragging { border-color: #0066cc; background: #f2f8ff; color: #0066cc; }
-.dropzone input { display: none; }
-.upload-status { min-height: 1.2em; font-size: 12px; color: #777; margin-top: 5px; }
-.attachments { list-style: none; margin-top: 8px; }
-.attachments li { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; }
-.attachments .thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid #ddd; flex-shrink: 0; background: #efefed; }
-.attachments code { flex: 1; overflow-wrap: anywhere; padding: 5px 7px; border-radius: 4px; background: #efefed; font-size: 12px; }
-.copy { padding: 4px 9px; border-color: #ccc; background: #fff; color: #333; font-size: 12px; }
-.copy:hover { background: #f0f0ee; }
+.hint { font-size: 11px; color: #999; margin-top: 2px; }
 .editor-toolbar { margin-bottom: 6px; }
 .toolbar-btn { padding: 4px 9px; border-color: #ccc; background: #fff; color: #333; font-size: 12px; }
 .toolbar-btn:hover { background: #f0f0ee; }
@@ -673,26 +676,28 @@ button:hover { background: #0055aa; }
   <input type="hidden" name="mode" value="{{if .IsNew}}new{{else}}edit{{end}}">
   {{if not .IsNew}}<input type="hidden" name="slug" value="{{.Slug}}">{{end}}
   {{if .Section}}<input type="hidden" name="section" value="{{.Section}}">{{end}}
-  <div class="field">
-    <label>title</label>
-    <input type="text" name="title" value="{{.Title}}" autofocus>
-    {{if not .IsNew}}<p class="hint">slug: {{.Slug}} (fixed — use the CLI to rename)</p>{{end}}
+  <div class="row">
+    <div class="field">
+      <label>title</label>
+      <input type="text" name="title" value="{{.Title}}" autofocus>
+      {{if not .IsNew}}<p class="hint">slug: {{.Slug}} (fixed — use the CLI to rename)</p>{{end}}
+    </div>
+    {{if .IsNew}}
+    <div class="field narrow">
+      <label>slug</label>
+      <input type="text" name="slug" value="{{.Slug}}" placeholder="derived from title">
+    </div>
+    {{end}}
   </div>
-  {{if .IsNew}}
-  <div class="field">
-    <label>slug</label>
-    <input type="text" name="slug" value="{{.Slug}}" placeholder="derived from the title if left blank">
-    <p class="hint">only needed if the title isn't ASCII, or to pick something else</p>
-  </div>
-  {{end}}
-  <div class="field">
-    <label>tags (comma-separated)</label>
-    <input type="text" name="tags" value="{{.TagStr}}">
-  </div>
-  <div class="field">
-    <label>aliases (comma-separated)</label>
-    <input type="text" name="aliases" value="{{.AliasStr}}">
-    <p class="hint">alternate names a [[wikilink]] can use to reach this page</p>
+  <div class="row">
+    <div class="field">
+      <label>tags</label>
+      <input type="text" name="tags" value="{{.TagStr}}" placeholder="comma-separated">
+    </div>
+    <div class="field">
+      <label>aliases</label>
+      <input type="text" name="aliases" value="{{.AliasStr}}" placeholder="comma-separated, for [[wikilinks]]">
+    </div>
   </div>
   <div class="field">
     <label>body (markdown)</label>
@@ -702,20 +707,8 @@ button:hover { background: #0055aa; }
     <textarea name="body" spellcheck="false">{{.Body}}</textarea>
     <p class="hint">in a table: Tab/Shift+Tab moves between cells, Enter on the last cell adds a row</p>
     {{if .Section}}<p class="hint">only this section will be saved — the rest of the page is untouched</p>{{end}}
+    <p class="hint" id="upload-status"></p>
   </div>
-  {{if not .IsNew}}
-  <div class="field">
-    <label>images</label>
-    <div class="dropzone" id="dropzone">
-      drop, paste, or click to choose an image
-      <input id="image-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp">
-    </div>
-    <p class="upload-status" id="upload-status"></p>
-    <ul class="attachments" id="attachments">
-      {{range .Attachments}}<li><img class="thumb" src="/attachments/{{.Name}}" alt=""><code>{{.Markup}}</code><button class="copy" type="button">copy</button></li>{{end}}
-    </ul>
-  </div>
-  {{end}}
   <div class="actions">
     <button type="submit">save</button>
     <a class="cancel" href="{{if .IsNew}}/{{else}}/entry/{{.Slug}}{{end}}">cancel</a>
@@ -823,38 +816,42 @@ button:hover { background: #0055aa; }
   });
 })();
 </script>
-{{if not .IsNew}}
 <script>
-const zone = document.getElementById('dropzone');
-const input = document.getElementById('image-input');
 const status = document.getElementById('upload-status');
-const list = document.getElementById('attachments');
+const form = document.querySelector('form');
+let isNew = {{if .IsNew}}true{{else}}false{{end}};
+let pageSlug = {{.Slug}};
 
-function addAttachment(attachment) {
-  const li = document.createElement('li');
-  const thumb = document.createElement('img');
-  const code = document.createElement('code');
-  const button = document.createElement('button');
-  thumb.className = 'thumb';
-  thumb.src = '/attachments/' + attachment.name;
-  thumb.alt = '';
-  code.textContent = attachment.markup;
-  button.type = 'button';
-  button.className = 'copy';
-  button.textContent = 'copy';
-  li.append(thumb, code, button);
-  list.append(li);
+// An attachment needs a page slug. For a new page, save the current form
+// first, then continue the drop/paste upload without making the user repeat it.
+async function ensurePageForUpload() {
+  if (!isNew) return true;
+  status.textContent = 'saving page…';
+  try {
+    const response = await fetch('/save', {method: 'POST', body: new FormData(form), redirect: 'follow'});
+    if (!response.ok || !response.redirected) throw new Error('could not save page before upload');
+    const match = new URL(response.url).pathname.match(/^\/entry\/([^/]+)$/);
+    if (!match) throw new Error('could not determine saved page');
+    pageSlug = decodeURIComponent(match[1]);
+    isNew = false;
+    form.elements.mode.value = 'edit';
+    history.replaceState(null, '', '/edit/' + encodeURIComponent(pageSlug));
+    return true;
+  } catch (error) {
+    status.textContent = error.message || 'could not save page before upload';
+    return false;
+  }
 }
 
 async function uploadImage(file) {
+  if (!await ensurePageForUpload()) return null;
   status.textContent = 'uploading…';
   const data = new FormData();
   data.append('image', file);
   try {
-    const response = await fetch('/upload/{{.Slug}}', {method: 'POST', body: data});
+    const response = await fetch('/upload/' + encodeURIComponent(pageSlug), {method: 'POST', body: data});
     if (!response.ok) throw new Error((await response.text()).trim());
     const attachment = await response.json();
-    addAttachment(attachment);
     status.textContent = 'uploaded';
     return attachment;
   } catch (error) {
@@ -862,22 +859,6 @@ async function uploadImage(file) {
     return null;
   }
 }
-
-async function upload(file) {
-  if (!file) return;
-  await uploadImage(file);
-  input.value = '';
-}
-
-zone.addEventListener('click', () => input.click());
-input.addEventListener('change', () => upload(input.files[0]));
-for (const event of ['dragenter', 'dragover']) {
-  zone.addEventListener(event, e => { e.preventDefault(); zone.classList.add('dragging'); });
-}
-for (const event of ['dragleave', 'drop']) {
-  zone.addEventListener(event, e => { e.preventDefault(); zone.classList.remove('dragging'); });
-}
-zone.addEventListener('drop', e => upload(e.dataTransfer.files[0]));
 
 const bodyField = document.querySelector('textarea[name=body]');
 bodyField.addEventListener('paste', async e => {
@@ -894,9 +875,9 @@ bodyField.addEventListener('paste', async e => {
 });
 
 // Dropping a file directly on the textarea otherwise falls through to the
-// browser's default handling (navigating to the file) instead of the
-// dropzone's upload flow. Only intercept drags that actually carry a file,
-// so ordinary text drag-and-drop into the textarea keeps working.
+// browser's default handling (navigating to the file) instead of uploading
+// it. Only intercept drags that actually carry a file, so ordinary text
+// drag-and-drop into the textarea keeps working.
 for (const event of ['dragenter', 'dragover']) {
   bodyField.addEventListener(event, e => {
     if (e.dataTransfer.types.includes('Files')) e.preventDefault();
@@ -909,31 +890,7 @@ bodyField.addEventListener('drop', async e => {
   const attachment = await uploadImage(file);
   if (attachment) bodyField.setRangeText(attachment.markup, bodyField.selectionStart, bodyField.selectionEnd, 'end');
 });
-
-list.addEventListener('click', async e => {
-  if (!e.target.classList.contains('copy')) return;
-  const markup = e.target.previousElementSibling.textContent;
-  try {
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(markup);
-    } else {
-      const temporary = document.createElement('textarea');
-      temporary.value = markup;
-      temporary.style.position = 'fixed';
-      temporary.style.opacity = '0';
-      document.body.append(temporary);
-      temporary.select();
-      document.execCommand('copy');
-      temporary.remove();
-    }
-    e.target.textContent = 'copied';
-    setTimeout(() => { e.target.textContent = 'copy'; }, 1200);
-  } catch (_) {
-    status.textContent = 'copy failed; select the Markdown manually';
-  }
-});
 </script>
-{{end}}
 </body>
 </html>`))
 
@@ -950,7 +907,6 @@ type editView struct {
 	Err            string
 	Section        string // "" for a full-page edit, else the section index
 	SectionHeading string
-	Attachments    []kb.Attachment
 }
 
 func renderEditView(w http.ResponseWriter, v editView) {
@@ -965,27 +921,25 @@ func renderEditView(w http.ResponseWriter, v editView) {
 		"Err":            v.Err,
 		"Section":        v.Section,
 		"SectionHeading": v.SectionHeading,
-		"Attachments":    v.Attachments,
 	})
 }
 
-func renderEdit(w http.ResponseWriter, e *kb.Entry, isNew bool, errMsg, kbDir string) {
+func renderEdit(w http.ResponseWriter, e *kb.Entry, isNew bool, errMsg string) {
 	renderEditView(w, editView{
-		IsNew:       isNew,
-		Slug:        e.Slug,
-		Title:       e.Title,
-		Tags:        e.Tags,
-		Aliases:     e.Aliases,
-		Body:        e.Body,
-		Err:         errMsg,
-		Attachments: kb.ListAttachments(kbDir, e.Slug),
+		IsNew:   isNew,
+		Slug:    e.Slug,
+		Title:   e.Title,
+		Tags:    e.Tags,
+		Aliases: e.Aliases,
+		Body:    e.Body,
+		Err:     errMsg,
 	})
 }
 
 // renderEditSection renders the editor scoped to one heading section (see
 // splitSections), reached via the "edit" links addSectionEditLinks adds to
 // each heading on the entry page.
-func renderEditSection(w http.ResponseWriter, e *kb.Entry, secs []mdSection, idx int, errMsg, kbDir string) {
+func renderEditSection(w http.ResponseWriter, e *kb.Entry, secs []mdSection, idx int, errMsg string) {
 	renderEditView(w, editView{
 		Slug:           e.Slug,
 		Title:          e.Title,
@@ -995,7 +949,6 @@ func renderEditSection(w http.ResponseWriter, e *kb.Entry, secs []mdSection, idx
 		Err:            errMsg,
 		Section:        strconv.Itoa(idx),
 		SectionHeading: strings.TrimSpace(strings.TrimLeft(secs[idx].Heading, "#")),
-		Attachments:    kb.ListAttachments(kbDir, e.Slug),
 	})
 }
 
@@ -1113,6 +1066,67 @@ func expandWikiLinks(body string, entries []*kb.Entry) string {
 		}
 		return fmt.Sprintf("[%s](/entry/%s)", text, idx.resolve(target))
 	})
+}
+
+var tableRef = regexp.MustCompile(`\{\{table\s+([^\s{}]+)\}\}`)
+
+// expandTables turns {{table <file>}} into a Markdown table built from the
+// referenced file's tab-separated rows. The reference is resolved to a bare
+// filename inside kb_dir/attachments (an optional leading "attachments/" is
+// accepted to mirror image markup, and any other directory component is
+// stripped) so a page can't reach outside that directory. A missing or
+// empty file renders an inline note instead of failing the whole page.
+func expandTables(body, kbDir string) string {
+	dir := filepath.Join(kbDir, "attachments")
+	return tableRef.ReplaceAllStringFunc(body, func(match string) string {
+		ref := tableRef.FindStringSubmatch(match)[1]
+		name := filepath.Base(strings.TrimPrefix(ref, "attachments/"))
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return fmt.Sprintf("*(table not found: %s)*", name)
+		}
+		table := tsvToMarkdownTable(data)
+		if table == "" {
+			return fmt.Sprintf("*(empty table: %s)*", name)
+		}
+		return table
+	})
+}
+
+var tsvEscaper = strings.NewReplacer("|", "\\|")
+
+// tsvToMarkdownTable renders tab-separated rows as a Markdown table, treating
+// the first row as the header. Ragged rows are left as-is; gomarkdown pads
+// short rows and drops extra cells in long ones.
+func tsvToMarkdownTable(data []byte) string {
+	text := strings.ReplaceAll(strings.TrimRight(string(data), "\r\n"), "\r\n", "\n")
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+
+	writeRow := func(b *strings.Builder, cells []string) {
+		b.WriteString("|")
+		for _, c := range cells {
+			b.WriteString(" ")
+			b.WriteString(tsvEscaper.Replace(c))
+			b.WriteString(" |")
+		}
+		b.WriteString("\n")
+	}
+
+	var b strings.Builder
+	header := strings.Split(lines[0], "\t")
+	writeRow(&b, header)
+	b.WriteString("|")
+	for range header {
+		b.WriteString(" --- |")
+	}
+	b.WriteString("\n")
+	for _, line := range lines[1:] {
+		writeRow(&b, strings.Split(line, "\t"))
+	}
+	return b.String()
 }
 
 // backlinks returns entries whose body contains a [[wikilink]] resolving to
@@ -1269,9 +1283,10 @@ func protectMath(body string) (string, []string) {
 	return body, spans
 }
 
-func renderMarkdown(body string, entries []*kb.Entry) string {
+func renderMarkdown(body string, entries []*kb.Entry, kbDir string) string {
 	body = expandWikiLinks(body, entries)
 	body = strings.ReplaceAll(body, "](attachments/", "](/attachments/")
+	body = expandTables(body, kbDir)
 	body, spans := protectMath(body)
 	p := parser.NewWithExtensions(parser.CommonExtensions | parser.AutoHeadingIDs)
 	r := html.NewRenderer(html.RendererOptions{Flags: html.CommonFlags})

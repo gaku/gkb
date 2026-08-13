@@ -65,12 +65,14 @@ gkb serve -p 9000             # custom port
 gkb serve -b 127.0.0.1        # loopback only (use behind a TLS proxy)
 ```
 
-**Authentication.** Because the web UI can write, set credentials in `~/.gkb` to
-gate the whole site. Requests without a valid session are redirected to a `/login`
-form (password-manager friendly) that sets a signed session cookie; "sign out"
-clears it. If unset, the server runs open and warns at startup.
+**Authentication.** Because the web UI can write, set credentials in
+`~/.gkb-serve` to gate the whole site. This keeps them out of `~/.gkb`, which
+agents may read to use the CLI. Requests without a valid session are redirected
+to a `/login` form (password-manager friendly) that sets a signed session cookie;
+"sign out" clears it. If unset, the server runs open and warns at startup.
 
 ```toml
+# ~/.gkb-serve (chmod 600 ~/.gkb-serve)
 serve_user = "gaku"
 serve_pass = "your-password"
 ```
@@ -131,13 +133,28 @@ non-English titles that mix in a romanization or parenthetical (e.g. title
 `インドゥティオマルス（Indutiomarus）` with alias `インドゥティオマルス`, so
 `[[インドゥティオマルス]]` resolves without repeating the full title).
 
+### Tables from `.tsv` files
+
+`{{table filename.tsv}}` renders a tab-separated file as a Markdown table,
+first row as the header. Place the file in `kb_dir/attachments/` (alongside
+images — copy it there directly, `gkb attach` doesn't handle `.tsv` yet) and
+reference it by filename:
+
+```markdown
+{{table sales.tsv}}
+```
+
+A missing file renders an inline `(table not found: ...)` note instead of
+failing the page.
+
 ## Config
 
-`~/.gkb` is a TOML file:
+`~/.gkb` is a TOML file agents can read to locate the knowledge base:
 
 ```toml
 kb_dir     = "~/self/kb"
-serve_user = "gaku"                          # optional — enables Basic Auth for `gkb serve`
-serve_pass = "your-password"                 # optional
 serve_url  = "https://kb.your-tailnet.ts.net" # optional — shown by `gkb status`
 ```
+
+`~/.gkb-serve` contains the optional `serve_user` and `serve_pass` credentials.
+Use `gkb serve --secret <path>` to use a different credentials file.

@@ -62,6 +62,14 @@ To show different display text, use `[[slug|display text]]` — slug first, then
 literal pipe, then the text. Do **not** escape the pipe (`\|`); a plain `|` is
 correct as-is.
 
+## Tables
+
+`{{table filename.tsv}}` renders a tab-separated file as a Markdown table
+(first row = header) when the page is viewed via `gkb serve`. The `.tsv` file
+must already exist in `kb_dir/attachments/` — there's no CLI command to
+create one, so write it there directly with a file tool rather than through
+`gkb`.
+
 ## Updating an existing entry
 
 `gkb edit <slug>` reads stdin and overwrites the entry's raw Markdown file

@@ -1,0 +1,11 @@
+[Unit]
+Description=gkb knowledge base web server
+
+[Service]
+ExecStart=/home/gaku/bin/gkb serve --secret /home/gaku/.gkb-serve -b 127.0.0.1
+ExecStartPost=/usr/bin/tailscale serve --bg http://127.0.0.1:8086
+ExecStopPost=/usr/bin/tailscale serve --bg http://127.0.0.1:8086 off
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

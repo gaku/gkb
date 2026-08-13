@@ -84,9 +84,64 @@ func TestHandleUploadRejectsNonImage(t *testing.T) {
 }
 
 func TestRenderMarkdownRewritesAttachmentURL(t *testing.T) {
-	html := renderMarkdown("![](attachments/my-page--1--image.png)", nil)
+	html := renderMarkdown("![](attachments/my-page--1--image.png)", nil, "")
 	if !strings.Contains(html, `src="/attachments/my-page--1--image.png"`) {
 		t.Fatalf("attachment URL was not rewritten: %s", html)
+	}
+}
+
+func TestRenderMarkdownRendersTsvTable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "attachments"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	tsv := "Name\tAge\nAlice\t30\nBob | Bar\t40\n"
+	if err := os.WriteFile(filepath.Join(dir, "attachments", "people.tsv"), []byte(tsv), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	html := renderMarkdown("{{table people.tsv}}", nil, dir)
+	for _, want := range []string{"<table>", "<th>Name</th>", "<th>Age</th>", "<td>Alice</td>", "<td>30</td>", "<td>Bob | Bar</td>"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("missing %q in %s", want, html)
+		}
+	}
+}
+
+func TestRenderMarkdownAcceptsAttachmentsPrefixedTableRef(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "attachments"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "attachments", "people.tsv"), []byte("Name\nAlice\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	html := renderMarkdown("{{table attachments/people.tsv}}", nil, dir)
+	if !strings.Contains(html, "<th>Name</th>") {
+		t.Fatalf("table not rendered: %s", html)
+	}
+}
+
+func TestRenderMarkdownReportsMissingTable(t *testing.T) {
+	html := renderMarkdown("{{table missing.tsv}}", nil, t.TempDir())
+	if !strings.Contains(html, "table not found: missing.tsv") {
+		t.Fatalf("missing not-found note: %s", html)
+	}
+}
+
+func TestExpandTablesRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "secret.tsv"), []byte("Name\nAlice\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "attachments"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := expandTables("{{table ../secret.tsv}}", dir)
+	if !strings.Contains(got, "table not found: secret.tsv") {
+		t.Fatalf("path traversal was not blocked: %q", got)
 	}
 }
 
@@ -171,7 +226,7 @@ func TestBacklinksExcludesSelfReference(t *testing.T) {
 
 func TestRenderNewFromWikiLinkPrefillsSlugForAsciiToken(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	renderNewFromWikiLink(recorder, "labienus", t.TempDir())
+	renderNewFromWikiLink(recorder, "labienus")
 	body := recorder.Body.String()
 	if !strings.Contains(body, `name="slug" value="labienus"`) {
 		t.Fatalf("slug not prefilled: %s", body)
@@ -179,11 +234,21 @@ func TestRenderNewFromWikiLinkPrefillsSlugForAsciiToken(t *testing.T) {
 	if !strings.Contains(body, `name="title" value="" `) {
 		t.Fatalf("title should be left blank: %s", body)
 	}
+	for _, want := range []string{
+		`let isNew = true;`,
+		`pageSlug = "labienus";`,
+		`async function ensurePageForUpload()`,
+		`fetch('/save', {method: 'POST', body: new FormData(form), redirect: 'follow'})`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("new-page image upload support missing %q", want)
+		}
+	}
 }
 
 func TestRenderNewFromWikiLinkPrefillsTitleForNonAsciiToken(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	renderNewFromWikiLink(recorder, "ローマ", t.TempDir())
+	renderNewFromWikiLink(recorder, "ローマ")
 	body := recorder.Body.String()
 	if !strings.Contains(body, `name="title" value="ローマ"`) {
 		t.Fatalf("title not prefilled: %s", body)
@@ -326,7 +391,7 @@ func TestSectionTextTrimsTrailingSeparatorBlankLine(t *testing.T) {
 
 func TestAddSectionEditLinksIndexMatchesSplitSections(t *testing.T) {
 	entries := []*kb.Entry{{Slug: "page", Body: sectionTestBody}}
-	html := renderMarkdown(sectionTestBody, entries)
+	html := renderMarkdown(sectionTestBody, entries, "")
 	html = addSectionEditLinks(html, "page")
 	secs := splitSections(sectionTestBody)
 	for i := range secs {
