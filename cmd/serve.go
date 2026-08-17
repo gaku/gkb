@@ -288,11 +288,17 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 	aliases := parseCommaList(r.FormValue("aliases"))
 	section := strings.TrimSpace(r.FormValue("section"))
 
+	jsonResponse := r.URL.Query().Get("json") == "1"
+
 	// renderErr re-renders the form being submitted, preserving section
 	// context (if any) so a resubmission after fixing the error still
 	// targets the same section instead of silently becoming a full-body
 	// save.
 	renderErr := func(errMsg string) {
+		if jsonResponse {
+			http.Error(w, errMsg, http.StatusBadRequest)
+			return
+		}
 		sectionHeading := ""
 		if section != "" {
 			if existing, err := kb.Load(kbDir, slug); err == nil {
@@ -358,6 +364,11 @@ func handleSave(w http.ResponseWriter, r *http.Request, kbDir string) {
 
 	if err := kb.Save(kbDir, e); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if jsonResponse {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"slug": e.Slug})
 		return
 	}
 	http.Redirect(w, r, "/entry/"+e.Slug, http.StatusSeeOther)
@@ -709,6 +720,17 @@ button:hover { background: #0055aa; }
     {{if .Section}}<p class="hint">only this section will be saved — the rest of the page is untouched</p>{{end}}
     <p class="hint" id="upload-status"></p>
   </div>
+  <div class="field">
+    <label>images</label>
+    <div class="dropzone" id="dropzone">
+      drop, paste, or click to choose an image
+      <input id="image-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp">
+    </div>
+    <p class="upload-status" id="upload-status"></p>
+    <ul class="attachments" id="attachments">
+      {{range .Attachments}}<li><img class="thumb" src="/attachments/{{.Name}}" alt=""><code>{{.Markup}}</code><button class="copy" type="button">copy</button></li>{{end}}
+    </ul>
+  </div>
   <div class="actions">
     <button type="submit">save</button>
     <a class="cancel" href="{{if .IsNew}}/{{else}}/entry/{{.Slug}}{{end}}">cancel</a>
@@ -818,9 +840,53 @@ button:hover { background: #0055aa; }
 </script>
 <script>
 const status = document.getElementById('upload-status');
+<<<<<<< Updated upstream
 const form = document.querySelector('form');
 let isNew = {{if .IsNew}}true{{else}}false{{end}};
 let pageSlug = {{.Slug}};
+=======
+const list = document.getElementById('attachments');
+const form = document.querySelector('form');
+const modeField = form.querySelector('input[name=mode]');
+let pageSlug = '{{.Slug}}';
+let pageSaved = modeField.value === 'edit';
+let savePromise = null;
+
+async function ensurePageSaved() {
+  if (pageSaved) return true;
+  if (savePromise) return savePromise;
+  savePromise = saveNewPage();
+  return savePromise;
+}
+
+async function saveNewPage() {
+  const titleField = form.querySelector('input[name=title]');
+  const slugField = form.querySelector('input[name=slug]');
+  if (!titleField.value.trim()) {
+    titleField.value = 'Untitled';
+    // A stable slug avoids collisions and does not need to be renamed later.
+    const id = crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10);
+    slugField.value = 'untitled-' + id;
+    status.textContent = 'creating an untitled page…';
+  } else {
+    status.textContent = 'saving page…';
+  }
+  try {
+    const response = await fetch('/save?json=1', {method: 'POST', body: new FormData(form)});
+    if (!response.ok) throw new Error((await response.text()).trim());
+    const result = await response.json();
+    pageSlug = result.slug;
+    slugField.value = result.slug;
+    modeField.value = 'edit';
+    pageSaved = true;
+    return true;
+  } catch (error) {
+    savePromise = null;
+    status.textContent = error.message || 'could not save page';
+    return false;
+  }
+}
+>>>>>>> Stashed changes
 
 // An attachment needs a page slug. For a new page, save the current form
 // first, then continue the drop/paste upload without making the user repeat it.
@@ -844,7 +910,11 @@ async function ensurePageForUpload() {
 }
 
 async function uploadImage(file) {
+<<<<<<< Updated upstream
   if (!await ensurePageForUpload()) return null;
+=======
+  if (!(await ensurePageSaved())) return null;
+>>>>>>> Stashed changes
   status.textContent = 'uploading…';
   const data = new FormData();
   data.append('image', file);
